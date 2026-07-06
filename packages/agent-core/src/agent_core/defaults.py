@@ -48,6 +48,11 @@ def build_default_registries(prompts_dir: str | Path | None = None) -> Registrie
     registries.models.register("anthropic", AnthropicModelProvider())
     registries.models.register("openai", OpenAIModelProvider())
     registries.prompts.register(_ECHO_PROMPT_KEY, _echo_prompt_text())
+    registries.prompts.register(
+        "prompts/assistant.md",
+        "You are a helpful assistant. Use the available tools when they help "
+        "answer the user's request, then give a clear final answer.\n",
+    )
 
     if prompts_dir is not None:
         load_prompts_dir(registries, prompts_dir)
