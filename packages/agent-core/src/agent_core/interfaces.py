@@ -61,10 +61,23 @@ class Message(BaseModel):
     content: str
 
 
-class ModelResponse(BaseModel):
-    """Normalized model completion result."""
+class ToolCall(BaseModel):
+    """A model's request to invoke a tool with arguments."""
 
-    text: str
+    name: str
+    args: dict[str, Any] = Field(default_factory=dict)
+    id: str | None = None
+
+
+class ModelResponse(BaseModel):
+    """Normalized model completion result.
+
+    A response carries free text and/or a list of ``tool_calls``. An empty
+    ``tool_calls`` list means the model produced a final answer.
+    """
+
+    text: str = ""
+    tool_calls: list[ToolCall] = Field(default_factory=list)
     raw: dict[str, Any] = Field(default_factory=dict)
     usage: dict[str, int] = Field(default_factory=dict)
 

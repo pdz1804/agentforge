@@ -26,12 +26,14 @@ from .interfaces import (
     ModelResponse,
     RunContext,
     Scope,
+    ToolCall,
     ToolResult,
 )
 from .loader import load_manifest_dict, load_manifest_file, resolve_manifest
 from .models.anthropic import AnthropicModelProvider
 from .models.echo import EchoModelProvider
 from .registry import Registries, Registry
+from .runtime import CompiledAgent, RunResult, TraceEvent, compile_agent
 from .schema import (
     AgentManifest,
     IOSchema,
@@ -67,6 +69,7 @@ __all__ = [
     "ToolResult",
     "ModelProvider",
     "ModelResponse",
+    "ToolCall",
     "Message",
     "MemoryProvider",
     "MemoryItem",
@@ -75,6 +78,11 @@ __all__ = [
     "ExecResult",
     "RunContext",
     "MCPConnector",
+    # runtime
+    "compile_agent",
+    "CompiledAgent",
+    "RunResult",
+    "TraceEvent",
     # built-ins
     "EchoTool",
     "EchoArgs",

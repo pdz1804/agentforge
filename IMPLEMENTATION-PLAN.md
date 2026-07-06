@@ -8,7 +8,8 @@ Stack: FastAPI + LangGraph + mem0 + sandbox (Python) / Next.js + Three.js (TS).
 **Status legend:** ☐ pending · ◐ in-progress · ☑ done
 
 ## Progress
-- **2026-07-06** — Phase 1 complete; Phase 0 backend slice complete (Next.js `apps/web` deferred by scope decision). Delivered `packages/agent-core` (schema, registries, interfaces, loader/resolver, Echo tool + Echo/Anthropic model providers), `apps/api` (FastAPI `/health`, `/api/tools`, `/api/agents/validate`), `infra/docker-compose.yml` (Postgres). Verified: ruff clean; **20 tests pass** (16 core + 4 API). Phase 1 exit contract proven (valid manifest resolves; unknown ref → clear aggregated error). Deferred-and-documented in `loader.py`: `sub_agents`/`guardrails`/`io_schema` resolution (Phases 2/6).
+- **2026-07-06 (Phase 2)** — LangGraph runtime complete. `runtime.py`: compile a manifest → `StateGraph` (agent↔tools ReAct loop) with our `ModelProvider`/`BaseTool` inside nodes (LangGraph = orchestration only); `TraceEvent` bus; `arun` + `astream`; `limits.max_steps` bounds the loop, `limits.wall_clock_s` bounds **both** `arun` and `astream`; eval-mode forces temp=0. `POST /api/runs` streams answer + trace as SSE with structured error events. Model contract extended: `ToolCall` + `ModelResponse.tool_calls`. **27 tests pass** (20 core + 7 API); ruff clean. Code-review fixes applied: SSE now wraps runtime errors, durable checkpointer deferred to Phase 5 (removed `MemorySaver` → no cross-run state bleed / no msgpack warning), wall-clock enforced on the streaming path. Anthropic tool-use parsing deferred to Phase 3 (documented).
+- **2026-07-06 (Phase 0-1)** — Phase 1 complete; Phase 0 backend slice complete (Next.js `apps/web` deferred by scope decision). Delivered `packages/agent-core` (schema, registries, interfaces, loader/resolver, Echo tool + Echo/Anthropic model providers), `apps/api` (FastAPI `/health`, `/api/tools`, `/api/agents/validate`), `infra/docker-compose.yml` (Postgres). Phase 1 exit contract proven. Committed `f38faac`.
 
 ## Phase Overview
 
@@ -16,7 +17,7 @@ Stack: FastAPI + LangGraph + mem0 + sandbox (Python) / Next.js + Three.js (TS).
 |---|---|---|---|---|
 | 0 | Foundation & scaffolding | — | Project setup | ◐ (backend done; web deferred) |
 | 1 | Unified Agent Core — interfaces & registries | 0 | Harness architecture | ☑ |
-| 2 | LangGraph runtime + single-agent run | 1 | Multi-agent orchestration | ☐ |
+| 2 | LangGraph runtime + single-agent run | 1 | Multi-agent orchestration | ☑ (checkpointer→Phase 5) |
 | 3 | Built-in tools + web search + MCP connector | 1,2 | Tools, MCP | ☐ |
 | 4 | Code sandbox + security test matrix | 1 | **Secure sandbox + safety testing** | ☐ |
 | 5 | Memory (mem0 + checkpointer) | 1,2 | Memory | ☐ |

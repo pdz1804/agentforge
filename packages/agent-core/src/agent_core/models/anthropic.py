@@ -50,8 +50,11 @@ class AnthropicModelProvider(ModelProvider):
 
         if self._client is None:
             self._client = AsyncAnthropic(api_key=api_key)
+        # A manifest sets the exact model name; fall back to the instance default.
+        # NOTE: tool-use (tool_calls) parsing lands in Phase 3 with real tools;
+        # this provider currently returns text only.
         resp = await self._client.messages.create(
-            model=self.model,
+            model=cfg.get("model") or self.model,
             max_tokens=cfg.get("max_tokens", 1024),
             temperature=cfg.get("temperature", 0.2),
             system=system,

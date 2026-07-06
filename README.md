@@ -5,18 +5,21 @@ Multi-Agent Workbench & Code Sandbox. See [`PRD.md`](./PRD.md) and
 
 ## Status
 
-**Phase 0 (backend slice) + Phase 1 — Unified Agent Core** implemented:
+**Phase 0 (backend slice) + Phase 1 + Phase 2** implemented:
 
 - `packages/agent-core` — declarative Agent Manifest schema, pluggable registries
   (tools / prompts / models / memory / MCP), core interfaces (`BaseTool`,
   `ModelProvider`, `MemoryProvider`, `CodeExecutor`, `MCPConnector`), a manifest
-  loader + reference resolver, and built-in Echo tool / model providers.
-- `apps/api` — FastAPI service: `/health`, `/api/tools`, `/api/agents/validate`.
+  loader + reference resolver, built-in Echo tool / model providers, and the
+  **LangGraph runtime** (`compile_agent` → agent↔tools loop, `TraceEvent` bus,
+  `arun` / `astream`, `max_steps` + `wall_clock_s` limits, eval-mode temp=0).
+- `apps/api` — FastAPI service: `/health`, `/api/tools`, `/api/agents/validate`,
+  and `POST /api/runs` (SSE streaming answer + trace).
 - `infra/` — Postgres via Docker Compose.
 
-Deferred to later phases: Next.js web UI, LangGraph runtime (Phase 2), real
-tools + MCP (Phase 3), sandbox (Phase 4), memory (Phase 5), eval harness
-(Phase 9).
+Deferred to later phases: Next.js web UI; real tools + MCP + Anthropic tool-use
+(Phase 3); sandbox (Phase 4); memory + durable checkpointer (Phase 5); eval
+harness (Phase 9).
 
 ## Layout
 
