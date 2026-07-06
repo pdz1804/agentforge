@@ -35,6 +35,7 @@ from .models.echo import EchoModelProvider
 from .models.openai import OpenAIModelProvider
 from .registry import Registries, Registry
 from .runtime import CompiledAgent, RunResult, TraceEvent, compile_agent
+from .sandbox.docker_executor import DockerCodeExecutor
 from .schema import (
     AgentManifest,
     IOSchema,
@@ -43,6 +44,7 @@ from .schema import (
     MemoryScope,
     ModelConfig,
 )
+from .tools.code_executor import CodeExecArgs, CodeExecutorTool
 from .tools.echo import EchoArgs, EchoTool
 from .tools.web_search import WebSearchArgs, WebSearchTool
 
@@ -90,6 +92,9 @@ __all__ = [
     "EchoArgs",
     "WebSearchTool",
     "WebSearchArgs",
+    "CodeExecutorTool",
+    "CodeExecArgs",
+    "DockerCodeExecutor",
     "EchoModelProvider",
     "AnthropicModelProvider",
     "OpenAIModelProvider",

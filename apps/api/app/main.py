@@ -9,10 +9,12 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agent_core import (
     __version__ as core_version,
+    DockerCodeExecutor,
+    RunContext,
     build_default_registries,
     compile_agent,
     load_manifest_dict,
@@ -106,3 +108,27 @@ def _error_event(detail: str) -> str:
     import json
 
     return f'data: {{"type": "error", "detail": {json.dumps(detail)}}}\n\n'
+
+
+class SandboxRequest(BaseModel):
+    code: str
+    timeout_s: int = Field(default=15, ge=1, le=60)
+
+
+@app.post("/api/sandbox/exec")
+async def sandbox_exec(req: SandboxRequest) -> dict:
+    """Run Python in the Docker sandbox and return the ExecResult.
+
+    Network is always denied on this endpoint (no caller-controlled egress).
+    Requires the docker CLI where the API runs; inside a container this needs the
+    docker socket mounted (deferred deployment concern). NOTE: no auth/rate-limit
+    yet (Phase 11) — do not expose publicly until then.
+    """
+    executor = DockerCodeExecutor()
+    try:
+        result = await executor.run(
+            req.code, RunContext(wall_clock_s=req.timeout_s, allow_network=False)
+        )
+    except Exception:
+        return {"stdout": "", "stderr": "sandbox unavailable", "exit_code": 1, "timed_out": False}
+    return result.model_dump()

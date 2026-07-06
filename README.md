@@ -15,14 +15,17 @@ Multi-Agent Workbench & Code Sandbox. See [`PRD.md`](./PRD.md) and
   `arun` / `astream`, `max_steps` + `wall_clock_s` limits, eval-mode temp=0).
   Model providers are registry-selected per manifest (`model.provider`):
   **`anthropic`** and **`openai`** (both with tool-use), plus an offline
-  **`echo`**. **`web_search`** tool via Tavily.
+  **`echo`**. Tools: **`web_search`** (Tavily) and **`code_executor`** (runs
+  Python in a locked-down Docker sandbox — no network, no host access, non-root).
 - `apps/api` — FastAPI service: `/health`, `/api/tools`, `/api/agents/validate`,
-  `POST /api/runs` (SSE streaming answer + trace); Dockerfile + compose `api` service.
+  `POST /api/runs` (SSE streaming answer + trace), `POST /api/sandbox/exec`;
+  Dockerfile + compose `api` service.
 - `infra/` — Postgres + the API via Docker Compose.
 
 Deferred to later phases: Next.js web UI; `EmbeddingSearchTool`+pgvector + MCP
-connector (Phase 3b); sandbox (Phase 4); memory + durable checkpointer
-(Phase 5); eval harness (Phase 9).
+connector (Phase 3b); memory + durable checkpointer (Phase 5); eval harness
+(Phase 9). The sandbox uses Docker; an E2B backend and docker-socket mounting
+for the containerized API are future work.
 
 ### Choosing a provider
 

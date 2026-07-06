@@ -13,6 +13,8 @@ from .models.anthropic import AnthropicModelProvider
 from .models.echo import EchoModelProvider
 from .models.openai import OpenAIModelProvider
 from .registry import Registries
+from .sandbox.docker_executor import DockerCodeExecutor
+from .tools.code_executor import CodeExecutorTool
 from .tools.echo import EchoTool
 from .tools.web_search import WebSearchTool
 
@@ -44,6 +46,7 @@ def build_default_registries(prompts_dir: str | Path | None = None) -> Registrie
 
     registries.tools.register("echo", EchoTool())
     registries.tools.register("web_search", WebSearchTool())
+    registries.tools.register("code_executor", CodeExecutorTool(DockerCodeExecutor()))
     registries.models.register("echo", EchoModelProvider())
     registries.models.register("anthropic", AnthropicModelProvider())
     registries.models.register("openai", OpenAIModelProvider())
