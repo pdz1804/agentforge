@@ -73,6 +73,7 @@ class RunRequest(BaseModel):
     input: str
     eval_mode: bool = False
     thread_id: str = "default"
+    agents: list[dict] = []  # sub-agent manifests the supervisor may delegate to
 
 
 @app.post("/api/runs")
@@ -86,10 +87,20 @@ async def run_agent(req: RunRequest) -> StreamingResponse:
     async def event_stream():
         try:
             manifest = load_manifest_dict(req.manifest)
-            resolve_manifest(manifest, registries)
-            agent = compile_agent(manifest, registries)
+            sub_agents = {}
+            for raw in req.agents:
+                sub = load_manifest_dict(raw)
+                sub_agents[sub.id] = sub
+            known = set(sub_agents)
+            resolve_manifest(manifest, registries, known_agents=known)
+            for sub in sub_agents.values():
+                resolve_manifest(sub, registries, known_agents=known)
+            agent = compile_agent(manifest, registries, agents=sub_agents)
         except AgentCoreError as exc:
             yield _error_event(str(exc))
+            return
+        except Exception:
+            yield _error_event("failed to prepare agent")
             return
         try:
             async for event in agent.astream(

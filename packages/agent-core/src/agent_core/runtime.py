@@ -16,6 +16,7 @@ the loop; ``limits.wall_clock_s`` bounds non-streaming runs.
 """
 
 import asyncio
+import contextvars
 import logging
 import operator
 from typing import Annotated, Any, TypedDict
@@ -24,7 +25,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
-from .errors import AgentCoreError
+from .errors import AgentCoreError, UnknownReferenceError
 from .interfaces import (
     BaseTool,
     MemoryItem,
@@ -33,11 +34,19 @@ from .interfaces import (
     ModelProvider,
     Scope,
     ToolCall,
+    ToolResult,
 )
 from .registry import Registries
 from .schema import AgentManifest
 
 logger = logging.getLogger(__name__)
+
+# Carries the active run's eval_mode across the tool-loop boundary so a
+# supervisor's delegation to sub-agents stays eval-isolated (deterministic, no
+# memory writes). Set around graph execution in arun/astream.
+_RUN_EVAL: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "agent_run_eval_mode", default=False
+)
 
 
 class TraceEvent(BaseModel):
@@ -268,6 +277,7 @@ class CompiledAgent:
     ) -> RunResult:
         """Run to completion and return the final answer + trace."""
         memories = await self._retrieve(user_input, eval_mode)
+        token = _RUN_EVAL.set(eval_mode)
         try:
             final: dict[str, Any] = await asyncio.wait_for(
                 self._graph.ainvoke(
@@ -280,6 +290,8 @@ class CompiledAgent:
             raise AgentCoreError(
                 f"run exceeded wall_clock_s={self.manifest.limits.wall_clock_s}"
             ) from exc
+        finally:
+            _RUN_EVAL.reset(token)
         result = RunResult(
             answer=final.get("answer"),
             steps=final["steps"],
@@ -299,6 +311,7 @@ class CompiledAgent:
         """
         memories = await self._retrieve(user_input, eval_mode)
         answer: str | None = None
+        token = _RUN_EVAL.set(eval_mode)
         try:
             async with asyncio.timeout(self.manifest.limits.wall_clock_s):
                 async for update in self._graph.astream(
@@ -318,19 +331,74 @@ class CompiledAgent:
                 node="runtime",
                 detail=f"wall_clock_s={self.manifest.limits.wall_clock_s} exceeded",
             )
+        finally:
+            _RUN_EVAL.reset(token)
         await self._persist(user_input, answer, eval_mode)
 
 
-def compile_agent(manifest: AgentManifest, registries: Registries) -> CompiledAgent:
+class _SubAgentArgs(BaseModel):
+    input: str
+
+
+class SubAgentTool(BaseTool):
+    """Exposes a sub-agent to a supervisor as a callable tool (agents-as-tools).
+
+    Delegation reuses the ordinary tool loop: the supervisor's model calls
+    ``ask_<id>`` with an ``input``, which runs that sub-agent and returns its
+    answer. The sub-agent's internal trace is summarized, not inlined (a nested
+    trace is a future enhancement).
+    """
+
+    args_schema = _SubAgentArgs
+
+    def __init__(self, agent_id: str, compiled: "CompiledAgent") -> None:
+        self.name = f"ask_{agent_id}"
+        self.description = f"Delegate a subtask to the '{agent_id}' sub-agent and get its answer."
+        self._compiled = compiled
+
+    async def run(self, **kwargs: Any) -> ToolResult:
+        args = self.validate_args(**kwargs)
+        # Inherit the supervisor's eval_mode so sub-agents stay eval-isolated.
+        result = await self._compiled.arun(args.input, eval_mode=_RUN_EVAL.get())
+        meta = {"sub_agent_steps": result.steps, "stopped_reason": result.stopped_reason}
+        if result.answer is None:  # sub-agent exhausted / did not answer
+            return ToolResult(
+                ok=False, output="", error=f"sub-agent stopped: {result.stopped_reason}", meta=meta
+            )
+        return ToolResult(ok=True, output=result.answer, meta=meta)
+
+
+def compile_agent(
+    manifest: AgentManifest,
+    registries: Registries,
+    agents: dict[str, AgentManifest] | None = None,
+    _visiting: frozenset[str] = frozenset(),
+) -> CompiledAgent:
     """Resolve a manifest's references into a runnable ``CompiledAgent``.
 
-    Assumes ``resolve_manifest`` has already validated the references (the API
-    does this before compiling); ``registries.get`` still raises a clear error
-    if anything is missing.
+    ``agents`` maps id -> manifest for any ``sub_agents`` the supervisor
+    delegates to; each is compiled recursively and exposed as an ``ask_<id>``
+    tool. Cycles are rejected. ``registries.get`` raises a clear error on any
+    missing tool/model/prompt/memory reference.
     """
+    if manifest.id in _visiting:
+        raise AgentCoreError(f"sub-agent cycle detected at '{manifest.id}'")
+
     provider = registries.models.get(manifest.model.provider)
     system_prompt = registries.prompts.get(manifest.prompt_ref)
     tools = {name: registries.tools.get(name) for name in manifest.tools}
+
+    for sub_id in manifest.sub_agents:
+        if not agents or sub_id not in agents:
+            raise UnknownReferenceError(f"sub_agent manifest '{sub_id}' was not provided")
+        sub = compile_agent(agents[sub_id], registries, agents, _visiting | {manifest.id})
+        sub_tool = SubAgentTool(sub_id, sub)
+        if sub_tool.name in tools:
+            raise AgentCoreError(
+                f"sub-agent tool '{sub_tool.name}' collides with an existing tool"
+            )
+        tools[sub_tool.name] = sub_tool
+
     memory = (
         registries.memory.get(manifest.memory.provider)
         if manifest.memory is not None

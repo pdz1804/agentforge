@@ -39,7 +39,7 @@ from .models.anthropic import AnthropicModelProvider
 from .models.echo import EchoModelProvider
 from .models.openai import OpenAIModelProvider
 from .registry import Registries, Registry
-from .runtime import CompiledAgent, RunResult, TraceEvent, compile_agent
+from .runtime import CompiledAgent, RunResult, SubAgentTool, TraceEvent, compile_agent
 from .sandbox.docker_executor import DockerCodeExecutor
 from .schema import (
     AgentManifest,
@@ -92,6 +92,7 @@ __all__ = [
     # runtime
     "compile_agent",
     "CompiledAgent",
+    "SubAgentTool",
     "RunResult",
     "TraceEvent",
     # built-ins

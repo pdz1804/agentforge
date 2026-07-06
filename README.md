@@ -21,7 +21,8 @@ Multi-Agent Workbench & Code Sandbox. See [`PRD.md`](./PRD.md) and
   agents recall prior facts across runs (set a manifest `memory` block).
   **`embedding_search`** tool: semantic search over an indexed corpus
   (`InMemoryVectorStore` + OpenAI embeddings). **MCP connector** adapts external
-  MCP-server tools into `BaseTool`s.
+  MCP-server tools into `BaseTool`s. **Multi-agent**: a supervisor's `sub_agents`
+  are exposed as `ask_<id>` tools (agents-as-tools) for delegation.
 - `apps/api` — FastAPI service: `/health`, `/api/tools`, `/api/agents/validate`,
   `POST /api/runs` (SSE), `POST /api/sandbox/exec`, `GET/POST/DELETE /api/memory`,
   `POST /api/index`; Dockerfile + compose `api` service.
