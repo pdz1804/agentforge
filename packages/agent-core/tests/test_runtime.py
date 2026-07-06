@@ -88,6 +88,34 @@ def test_max_steps_limit_terminates_loop():
     assert result.steps == 3  # bounded, no infinite loop
 
 
+def test_bad_tool_args_become_recoverable_error():
+    # A model can emit out-of-range args; that must feed an error back into the
+    # loop (so the model can recover), not crash the run.
+    registries = build_default_registries()  # includes the web_search tool
+    registries.models.register(
+        "scripted",
+        ScriptedModelProvider(
+            [
+                ModelResponse(
+                    tool_calls=[
+                        ToolCall(name="web_search", args={"query": "x", "max_results": 999})
+                    ]
+                ),
+                ModelResponse(text="done"),
+            ]
+        ),
+    )
+    manifest = load_manifest_dict(_manifest("scripted", ["web_search"]))
+    resolve_manifest(manifest, registries)
+    agent = compile_agent(manifest, registries)
+
+    result = asyncio.run(agent.arun("go"))
+
+    assert result.answer == "done"
+    tool_events = [e for e in result.trace if e.type == "tool"]
+    assert tool_events and "error" in tool_events[0].detail
+
+
 def test_no_tool_path_returns_answer():
     registries = build_default_registries()  # has the offline "echo" model
     manifest = load_manifest_dict(_manifest("echo", []))

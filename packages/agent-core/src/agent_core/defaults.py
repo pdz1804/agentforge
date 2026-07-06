@@ -11,8 +11,10 @@ from pathlib import Path
 
 from .models.anthropic import AnthropicModelProvider
 from .models.echo import EchoModelProvider
+from .models.openai import OpenAIModelProvider
 from .registry import Registries
 from .tools.echo import EchoTool
+from .tools.web_search import WebSearchTool
 
 # The example echo agent's prompt. The packaged file `prompts/echo_agent.md` is
 # the single source of truth; the inline string is only a fallback for installs
@@ -41,8 +43,10 @@ def build_default_registries(prompts_dir: str | Path | None = None) -> Registrie
     registries = Registries()
 
     registries.tools.register("echo", EchoTool())
+    registries.tools.register("web_search", WebSearchTool())
     registries.models.register("echo", EchoModelProvider())
     registries.models.register("anthropic", AnthropicModelProvider())
+    registries.models.register("openai", OpenAIModelProvider())
     registries.prompts.register(_ECHO_PROMPT_KEY, _echo_prompt_text())
 
     if prompts_dir is not None:

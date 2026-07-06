@@ -54,19 +54,27 @@ class BaseTool(ABC):
 # --------------------------------------------------------------------------- #
 # Model providers
 # --------------------------------------------------------------------------- #
-class Message(BaseModel):
-    """A single chat message passed to a model provider."""
-
-    role: str  # "system" | "user" | "assistant"
-    content: str
-
-
 class ToolCall(BaseModel):
     """A model's request to invoke a tool with arguments."""
 
     name: str
     args: dict[str, Any] = Field(default_factory=dict)
     id: str | None = None
+
+
+class Message(BaseModel):
+    """A provider-neutral chat message.
+
+    Carries tool-use: an assistant message may include ``tool_calls``; a
+    ``role="tool"`` message is a tool result linked by ``tool_call_id``. Provider
+    adapters translate this neutral shape into their native wire format.
+    """
+
+    role: str  # "system" | "user" | "assistant" | "tool"
+    content: str = ""
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    tool_call_id: str | None = None
+    name: str | None = None
 
 
 class ModelResponse(BaseModel):
@@ -165,7 +173,7 @@ class CodeExecutor(ABC):
 
 
 # --------------------------------------------------------------------------- #
-# MCP — interface only; impl arrives in Phase 3
+# MCP — interface only; connector impl arrives in Phase 3b
 # --------------------------------------------------------------------------- #
 class MCPConnector(ABC):
     """Discovers tools from an MCP server and adapts them to BaseTool."""

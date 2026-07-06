@@ -19,5 +19,16 @@ services:
       timeout: 5s
       retries: 5
 
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    container_name: agentforge-api
+    env_file:
+      - ../.env
+    ports:
+      - "${API_PORT:-8000}:8000"
+    # No DB dependency yet — the API opens no Postgres connection until Phase 4/5.
+
 volumes:
   agentforge_pgdata:

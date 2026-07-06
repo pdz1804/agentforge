@@ -85,8 +85,16 @@ class CompiledAgent:
                 max_tokens=self.manifest.model.max_tokens,
             )
             step = state["steps"] + 1
-            assistant = Message(role="assistant", content=resp.text)
             if resp.tool_calls:
+                # Ensure every tool call has a stable id so the assistant turn and
+                # the matching tool-result turn pair correctly for any provider
+                # (real providers supply ids; scripted/echo may not).
+                for i, tc in enumerate(resp.tool_calls):
+                    if tc.id is None:
+                        tc.id = f"call_{step}_{i}"
+                assistant = Message(
+                    role="assistant", content=resp.text, tool_calls=resp.tool_calls
+                )
                 return {
                     "messages": [assistant],
                     "steps": step,
@@ -103,7 +111,7 @@ class CompiledAgent:
                     ],
                 }
             return {
-                "messages": [assistant],
+                "messages": [Message(role="assistant", content=resp.text)],
                 "steps": step,
                 "answer": resp.text,
                 "pending": [],
@@ -122,15 +130,29 @@ class CompiledAgent:
                 tool = self._tools.get(call.name)
                 if tool is None:  # defensive; resolver should have caught this
                     detail = f"tool '{call.name}' not available"
-                    new_messages.append(Message(role="user", content=f"[tool error] {detail}"))
+                    new_messages.append(
+                        Message(
+                            role="tool", content=detail, tool_call_id=call.id, name=call.name
+                        )
+                    )
                     events.append(
                         TraceEvent(step=state["steps"], type="tool", node=call.name, detail=detail)
                     )
                     continue
-                result = await tool.run(**call.args)
-                content = result.output if result.ok else f"error: {result.error}"
+                try:
+                    result = await tool.run(**call.args)
+                    content = result.output if result.ok else f"error: {result.error}"
+                except Exception as exc:
+                    # Bad args (e.g. schema validation) or a tool bug becomes a
+                    # recoverable tool-result the model can react to, not a crash.
+                    content = f"error: {exc}"
                 new_messages.append(
-                    Message(role="user", content=f"[tool:{call.name}] {content}")
+                    Message(
+                        role="tool",
+                        content=str(content),
+                        tool_call_id=call.id,
+                        name=call.name,
+                    )
                 )
                 events.append(
                     TraceEvent(

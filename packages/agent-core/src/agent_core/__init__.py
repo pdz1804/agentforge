@@ -32,6 +32,7 @@ from .interfaces import (
 from .loader import load_manifest_dict, load_manifest_file, resolve_manifest
 from .models.anthropic import AnthropicModelProvider
 from .models.echo import EchoModelProvider
+from .models.openai import OpenAIModelProvider
 from .registry import Registries, Registry
 from .runtime import CompiledAgent, RunResult, TraceEvent, compile_agent
 from .schema import (
@@ -43,6 +44,7 @@ from .schema import (
     ModelConfig,
 )
 from .tools.echo import EchoArgs, EchoTool
+from .tools.web_search import WebSearchArgs, WebSearchTool
 
 __version__ = "0.1.0"
 
@@ -86,8 +88,11 @@ __all__ = [
     # built-ins
     "EchoTool",
     "EchoArgs",
+    "WebSearchTool",
+    "WebSearchArgs",
     "EchoModelProvider",
     "AnthropicModelProvider",
+    "OpenAIModelProvider",
     # errors
     "AgentCoreError",
     "RegistrationError",

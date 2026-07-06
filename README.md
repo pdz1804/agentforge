@@ -13,13 +13,23 @@ Multi-Agent Workbench & Code Sandbox. See [`PRD.md`](./PRD.md) and
   loader + reference resolver, built-in Echo tool / model providers, and the
   **LangGraph runtime** (`compile_agent` → agent↔tools loop, `TraceEvent` bus,
   `arun` / `astream`, `max_steps` + `wall_clock_s` limits, eval-mode temp=0).
+  Model providers are registry-selected per manifest (`model.provider`):
+  **`anthropic`** and **`openai`** (both with tool-use), plus an offline
+  **`echo`**. **`web_search`** tool via Tavily.
 - `apps/api` — FastAPI service: `/health`, `/api/tools`, `/api/agents/validate`,
-  and `POST /api/runs` (SSE streaming answer + trace).
-- `infra/` — Postgres via Docker Compose.
+  `POST /api/runs` (SSE streaming answer + trace); Dockerfile + compose `api` service.
+- `infra/` — Postgres + the API via Docker Compose.
 
-Deferred to later phases: Next.js web UI; real tools + MCP + Anthropic tool-use
-(Phase 3); sandbox (Phase 4); memory + durable checkpointer (Phase 5); eval
-harness (Phase 9).
+Deferred to later phases: Next.js web UI; `EmbeddingSearchTool`+pgvector + MCP
+connector (Phase 3b); sandbox (Phase 4); memory + durable checkpointer
+(Phase 5); eval harness (Phase 9).
+
+### Choosing a provider
+
+Set the manifest's `model.provider` to `anthropic`, `openai`, or `echo`. Provide
+the matching key in `.env` (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) and
+`TAVILY_API_KEY` for `web_search`. Add a new provider by implementing
+`ModelProvider` and registering it — no core edits.
 
 ## Layout
 
