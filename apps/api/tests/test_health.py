@@ -130,3 +130,30 @@ def test_run_streams_error_event_on_runtime_failure():
     assert resp.status_code == 200
     assert '"type": "error"' in resp.text
     assert "model exploded" in resp.text
+
+
+def test_memory_api_add_list_delete():
+    add = client.post("/api/memory", json={"text": "loves orchids", "namespace": "apitest"})
+    assert add.status_code == 200 and add.json()["ok"] is True
+
+    listed = client.get("/api/memory", params={"namespace": "apitest"})
+    assert listed.status_code == 200
+    items = listed.json()["items"]
+    assert any("orchids" in i["text"] for i in items)
+
+    mid = next(i["id"] for i in items if "orchids" in i["text"])
+    deleted = client.delete("/api/memory", params={"id": mid, "namespace": "apitest"})
+    assert deleted.status_code == 200
+
+    remaining = client.get("/api/memory", params={"namespace": "apitest"}).json()["items"]
+    assert all(i["id"] != mid for i in remaining)
+
+
+def test_memory_api_unknown_provider_is_400():
+    resp = client.get("/api/memory", params={"provider": "does_not_exist"})
+    assert resp.status_code == 400
+
+
+def test_memory_api_bad_scope_is_400():
+    resp = client.get("/api/memory", params={"scope": "bogus"})
+    assert resp.status_code == 400

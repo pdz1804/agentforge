@@ -17,8 +17,10 @@ Multi-Agent Workbench & Code Sandbox. See [`PRD.md`](./PRD.md) and
   **`anthropic`** and **`openai`** (both with tool-use), plus an offline
   **`echo`**. Tools: **`web_search`** (Tavily) and **`code_executor`** (runs
   Python in a locked-down Docker sandbox — no network, no host access, non-root).
+  Long-term **memory** via `MemoryProvider` (`in_memory` default, optional `mem0`):
+  agents recall prior facts across runs (set a manifest `memory` block).
 - `apps/api` — FastAPI service: `/health`, `/api/tools`, `/api/agents/validate`,
-  `POST /api/runs` (SSE streaming answer + trace), `POST /api/sandbox/exec`;
+  `POST /api/runs` (SSE), `POST /api/sandbox/exec`, `GET/POST/DELETE /api/memory`;
   Dockerfile + compose `api` service.
 - `infra/` — Postgres + the API via Docker Compose.
 

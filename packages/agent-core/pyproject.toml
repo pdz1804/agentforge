@@ -17,6 +17,7 @@ dependencies = [
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.39"]
 openai = ["openai>=1.40"]
+mem0 = ["mem0ai>=0.1"]
 dev = ["pytest>=8.0"]
 
 [tool.setuptools.packages.find]

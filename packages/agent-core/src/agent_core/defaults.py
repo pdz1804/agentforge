@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .memory.in_memory import InMemoryMemoryProvider
+from .memory.mem0_provider import Mem0MemoryProvider
 from .models.anthropic import AnthropicModelProvider
 from .models.echo import EchoModelProvider
 from .models.openai import OpenAIModelProvider
@@ -50,6 +52,8 @@ def build_default_registries(prompts_dir: str | Path | None = None) -> Registrie
     registries.models.register("echo", EchoModelProvider())
     registries.models.register("anthropic", AnthropicModelProvider())
     registries.models.register("openai", OpenAIModelProvider())
+    registries.memory.register("in_memory", InMemoryMemoryProvider())
+    registries.memory.register("mem0", Mem0MemoryProvider())
     registries.prompts.register(_ECHO_PROMPT_KEY, _echo_prompt_text())
     registries.prompts.register(
         "prompts/assistant.md",

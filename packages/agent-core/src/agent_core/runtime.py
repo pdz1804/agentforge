@@ -16,6 +16,7 @@ the loop; ``limits.wall_clock_s`` bounds non-streaming runs.
 """
 
 import asyncio
+import logging
 import operator
 from typing import Annotated, Any, TypedDict
 
@@ -24,9 +25,19 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
 from .errors import AgentCoreError
-from .interfaces import BaseTool, Message, ModelProvider, ToolCall
+from .interfaces import (
+    BaseTool,
+    MemoryItem,
+    MemoryProvider,
+    Message,
+    ModelProvider,
+    Scope,
+    ToolCall,
+)
 from .registry import Registries
 from .schema import AgentManifest
+
+logger = logging.getLogger(__name__)
 
 
 class TraceEvent(BaseModel):
@@ -64,11 +75,19 @@ class CompiledAgent:
         provider: ModelProvider,
         system_prompt: str,
         tools: dict[str, BaseTool],
+        memory: MemoryProvider | None = None,
     ) -> None:
         self.manifest = manifest
         self._provider = provider
         self._system_prompt = system_prompt
         self._tools = tools
+        self._memory = memory
+        if manifest.memory is not None:
+            self._mem_scope: Scope | None = Scope(manifest.memory.scope.value)
+            self._mem_namespace = manifest.memory.namespace
+        else:
+            self._mem_scope = None
+            self._mem_namespace = ""
         self._graph = self._build_graph()
 
     # -- graph construction ------------------------------------------------- #
@@ -186,17 +205,47 @@ class CompiledAgent:
         return builder.compile()
 
     # -- helpers ------------------------------------------------------------ #
-    def _initial_state(self, user_input: str) -> _RunState:
+    def _initial_state(
+        self, user_input: str, memories: list[MemoryItem] | None = None
+    ) -> _RunState:
+        system = [Message(role="system", content=self._system_prompt)]
+        if memories:
+            joined = "\n".join(f"- {m.text}" for m in memories)
+            system.append(
+                Message(role="system", content=f"Relevant memory about the user:\n{joined}")
+            )
         return {
-            "messages": [
-                Message(role="system", content=self._system_prompt),
-                Message(role="user", content=user_input),
-            ],
+            "messages": [*system, Message(role="user", content=user_input)],
             "trace": [],
             "steps": 0,
             "answer": None,
             "pending": [],
         }
+
+    async def _retrieve(self, user_input: str, eval_mode: bool) -> list[MemoryItem]:
+        # Eval mode is memory-isolated (deterministic); a memory failure must
+        # never break the run.
+        if self._memory is None or self._mem_scope is None or eval_mode:
+            return []
+        try:
+            return await self._memory.search(
+                self._mem_scope, self._mem_namespace, user_input, k=5
+            )
+        except Exception:
+            logger.debug("memory retrieve failed", exc_info=True)
+            return []
+
+    async def _persist(self, user_input: str, answer: str | None, eval_mode: bool) -> None:
+        if self._memory is None or self._mem_scope is None or eval_mode or not answer:
+            return
+        try:
+            await self._memory.add(
+                self._mem_scope,
+                self._mem_namespace,
+                [MemoryItem(text=f"User said: {user_input}\nAssistant answered: {answer}")],
+            )
+        except Exception:
+            logger.debug("memory persist failed", exc_info=True)
 
     def _config(self, eval_mode: bool, thread_id: str) -> dict:
         temperature = 0.0 if eval_mode else self.manifest.model.temperature
@@ -218,10 +267,12 @@ class CompiledAgent:
         self, user_input: str, *, eval_mode: bool = False, thread_id: str = "default"
     ) -> RunResult:
         """Run to completion and return the final answer + trace."""
+        memories = await self._retrieve(user_input, eval_mode)
         try:
             final: dict[str, Any] = await asyncio.wait_for(
                 self._graph.ainvoke(
-                    self._initial_state(user_input), self._config(eval_mode, thread_id)
+                    self._initial_state(user_input, memories),
+                    self._config(eval_mode, thread_id),
                 ),
                 timeout=self.manifest.limits.wall_clock_s,
             )
@@ -229,12 +280,14 @@ class CompiledAgent:
             raise AgentCoreError(
                 f"run exceeded wall_clock_s={self.manifest.limits.wall_clock_s}"
             ) from exc
-        return RunResult(
+        result = RunResult(
             answer=final.get("answer"),
             steps=final["steps"],
             trace=final["trace"],
             stopped_reason=self._stopped_reason(final, self.manifest.limits.max_steps),
         )
+        await self._persist(user_input, result.answer, eval_mode)
+        return result
 
     async def astream(
         self, user_input: str, *, eval_mode: bool = False, thread_id: str = "default"
@@ -244,15 +297,19 @@ class CompiledAgent:
         Bounded by ``limits.wall_clock_s``; on timeout a final ``limit`` event is
         emitted and the stream ends cleanly.
         """
+        memories = await self._retrieve(user_input, eval_mode)
+        answer: str | None = None
         try:
             async with asyncio.timeout(self.manifest.limits.wall_clock_s):
                 async for update in self._graph.astream(
-                    self._initial_state(user_input),
+                    self._initial_state(user_input, memories),
                     self._config(eval_mode, thread_id),
                     stream_mode="updates",
                 ):
                     for node_output in update.values():
                         for event in node_output.get("trace", []):
+                            if event.type == "answer":
+                                answer = event.detail
                             yield event
         except TimeoutError:
             yield TraceEvent(
@@ -261,6 +318,7 @@ class CompiledAgent:
                 node="runtime",
                 detail=f"wall_clock_s={self.manifest.limits.wall_clock_s} exceeded",
             )
+        await self._persist(user_input, answer, eval_mode)
 
 
 def compile_agent(manifest: AgentManifest, registries: Registries) -> CompiledAgent:
@@ -273,4 +331,9 @@ def compile_agent(manifest: AgentManifest, registries: Registries) -> CompiledAg
     provider = registries.models.get(manifest.model.provider)
     system_prompt = registries.prompts.get(manifest.prompt_ref)
     tools = {name: registries.tools.get(name) for name in manifest.tools}
-    return CompiledAgent(manifest, provider, system_prompt, tools)
+    memory = (
+        registries.memory.get(manifest.memory.provider)
+        if manifest.memory is not None
+        else None
+    )
+    return CompiledAgent(manifest, provider, system_prompt, tools, memory=memory)

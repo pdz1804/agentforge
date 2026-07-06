@@ -30,6 +30,8 @@ from .interfaces import (
     ToolResult,
 )
 from .loader import load_manifest_dict, load_manifest_file, resolve_manifest
+from .memory.in_memory import InMemoryMemoryProvider
+from .memory.mem0_provider import Mem0MemoryProvider
 from .models.anthropic import AnthropicModelProvider
 from .models.echo import EchoModelProvider
 from .models.openai import OpenAIModelProvider
@@ -98,6 +100,8 @@ __all__ = [
     "EchoModelProvider",
     "AnthropicModelProvider",
     "OpenAIModelProvider",
+    "InMemoryMemoryProvider",
+    "Mem0MemoryProvider",
     # errors
     "AgentCoreError",
     "RegistrationError",

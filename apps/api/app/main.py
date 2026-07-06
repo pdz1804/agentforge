@@ -11,10 +11,14 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from fastapi import HTTPException
+
 from agent_core import (
     __version__ as core_version,
     DockerCodeExecutor,
+    MemoryItem,
     RunContext,
+    Scope,
     build_default_registries,
     compile_agent,
     load_manifest_dict,
@@ -132,3 +136,59 @@ async def sandbox_exec(req: SandboxRequest) -> dict:
     except Exception:
         return {"stdout": "", "stderr": "sandbox unavailable", "exit_code": 1, "timed_out": False}
     return result.model_dump()
+
+
+def _memory_provider(provider: str):
+    try:
+        return registries.memory.get(provider)
+    except AgentCoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _scope(value: str) -> Scope:
+    try:
+        return Scope(value)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"invalid scope '{value}'") from None
+
+
+class MemoryAddRequest(BaseModel):
+    text: str
+    provider: str = "in_memory"
+    scope: str = "user"
+    namespace: str = "default"
+
+
+# NOTE: the memory endpoints are unauthenticated and honor caller-supplied
+# scope/namespace — a caller can read/delete any bucket. Do not expose publicly
+# until auth + per-user scoping land (Phase 11).
+@app.get("/api/memory")
+async def memory_list(
+    provider: str = "in_memory",
+    scope: str = "user",
+    namespace: str = "default",
+    query: str | None = None,
+) -> dict:
+    prov = _memory_provider(provider)
+    sc = _scope(scope)
+    items = await (prov.search(sc, namespace, query, 20) if query else prov.all(sc, namespace))
+    return {"items": [i.model_dump() for i in items]}
+
+
+@app.post("/api/memory")
+async def memory_add(req: MemoryAddRequest) -> dict:
+    prov = _memory_provider(req.provider)
+    await prov.add(_scope(req.scope), req.namespace, [MemoryItem(text=req.text)])
+    return {"ok": True}
+
+
+@app.delete("/api/memory")
+async def memory_delete(
+    id: str,
+    provider: str = "in_memory",
+    scope: str = "user",
+    namespace: str = "default",
+) -> dict:
+    prov = _memory_provider(provider)
+    await prov.delete(_scope(scope), namespace, [id])
+    return {"ok": True}

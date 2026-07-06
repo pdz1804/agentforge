@@ -125,7 +125,11 @@ class MemoryItem(BaseModel):
 
 
 class MemoryProvider(ABC):
-    """Long-term memory backend (e.g. mem0). Concrete impl arrives in Phase 5."""
+    """Long-term memory backend. Impls: InMemory (default) + mem0 (Phase 5).
+
+    Memories are bucketed by ``(scope, namespace)`` so a user's / agent's /
+    session's memories stay isolated.
+    """
 
     provider: str
 
@@ -141,6 +145,10 @@ class MemoryProvider(ABC):
 
     @abstractmethod
     async def delete(self, scope: Scope, namespace: str, ids: list[str]) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def all(self, scope: Scope, namespace: str) -> list[MemoryItem]:
         raise NotImplementedError
 
 
