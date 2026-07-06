@@ -160,3 +160,37 @@ def test_memory_api_unknown_provider_is_400():
 def test_memory_api_bad_scope_is_400():
     resp = client.get("/api/memory", params={"scope": "bogus"})
     assert resp.status_code == 400
+
+
+def test_run_persists_and_is_retrievable():
+    import re
+
+    resp = client.post(
+        "/api/runs",
+        json={
+            "manifest": {
+                "id": "runner",
+                "model": {"provider": "echo", "name": "test-model"},
+                "prompt_ref": "prompts/echo_agent.md",
+                "tools": [],
+            },
+            "input": "remember me",
+        },
+    )
+    assert resp.status_code == 200
+    assert "run_started" in resp.text
+    run_id = re.search(r'"run_id": "([0-9a-f]+)"', resp.text).group(1)
+
+    listed = client.get("/api/runs").json()["runs"]
+    assert any(r["id"] == run_id and r["status"] == "completed" for r in listed)
+
+    record = client.get(f"/api/runs/{run_id}").json()
+    assert record["answer"] == "remember me"
+    assert "trace" in record and record["cost_usd"] == 0.0  # echo model is free
+
+    exported = client.get(f"/api/runs/{run_id}/export").json()
+    assert exported["id"] == run_id
+
+
+def test_run_get_unknown_is_404():
+    assert client.get("/api/runs/deadbeef00").status_code == 404

@@ -11,25 +11,34 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+import json
+import uuid
+from datetime import datetime, timezone
+
 from fastapi import HTTPException
 
 from agent_core import (
     __version__ as core_version,
     DockerCodeExecutor,
+    InMemoryRunStore,
     MemoryItem,
     RunContext,
+    RunRecord,
     Scope,
     build_default_registries,
     compile_agent,
     load_manifest_dict,
     resolve_manifest,
+    token_cost,
+    usage_totals,
 )
 from agent_core.errors import AgentCoreError
 
 app = FastAPI(title="AgentForge API", version=core_version)
 
-# Built once at startup; later phases will make this per-user / DB-backed.
+# Built once at startup; later phases will make these per-user / DB-backed.
 registries = build_default_registries()
+run_store = InMemoryRunStore()
 
 
 @app.get("/health")
@@ -84,39 +93,127 @@ async def run_agent(req: RunRequest) -> StreamingResponse:
     HTTP error, so a client on the SSE channel always gets a structured reply.
     """
 
+    run_id = uuid.uuid4().hex
+    created_at = datetime.now(timezone.utc).isoformat()
+    manifest_id = str(req.manifest.get("id", "unknown"))
+    model_name = str((req.manifest.get("model") or {}).get("name", "unknown"))
+
     async def event_stream():
+        events: list = []
+        answer: str | None = None
+        status = "error"
+        persisted = False
+
+        async def persist() -> float:
+            # Idempotent: exactly one save per request even across the finally.
+            # NOTE: multi-agent runs under-count cost — a sub-agent's tokens live
+            # in its own (non-inlined) trace, so cost_usd is a lower bound.
+            nonlocal persisted
+            usage = usage_totals(events)
+            cost = token_cost(usage, model_name)
+            if persisted:
+                return cost
+            persisted = True
+            await run_store.save(
+                RunRecord(
+                    id=run_id,
+                    manifest_id=manifest_id,
+                    model=model_name,
+                    input=req.input,
+                    status=status,
+                    answer=answer,
+                    trace=events,
+                    usage=usage,
+                    cost_usd=cost,
+                    created_at=created_at,
+                )
+            )
+            return cost
+
+        yield f"data: {json.dumps({'type': 'run_started', 'run_id': run_id})}\n\n"
         try:
-            manifest = load_manifest_dict(req.manifest)
-            sub_agents = {}
-            for raw in req.agents:
-                sub = load_manifest_dict(raw)
-                sub_agents[sub.id] = sub
-            known = set(sub_agents)
-            resolve_manifest(manifest, registries, known_agents=known)
-            for sub in sub_agents.values():
-                resolve_manifest(sub, registries, known_agents=known)
-            agent = compile_agent(manifest, registries, agents=sub_agents)
-        except AgentCoreError as exc:
-            yield _error_event(str(exc))
-            return
-        except Exception:
-            yield _error_event("failed to prepare agent")
-            return
-        try:
-            async for event in agent.astream(
-                req.input, eval_mode=req.eval_mode, thread_id=req.thread_id
-            ):
-                yield f"data: {event.model_dump_json()}\n\n"
-        except AgentCoreError as exc:
-            yield _error_event(str(exc))
-            return
-        except Exception:
-            # Never leak internals/secrets/stack traces into the stream.
-            yield _error_event("internal error during run")
-            return
-        yield 'data: {"type": "done"}\n\n'
+            try:
+                manifest = load_manifest_dict(req.manifest)
+                sub_agents = {}
+                for raw in req.agents:
+                    sub = load_manifest_dict(raw)
+                    sub_agents[sub.id] = sub
+                known = set(sub_agents)
+                resolve_manifest(manifest, registries, known_agents=known)
+                for sub in sub_agents.values():
+                    resolve_manifest(sub, registries, known_agents=known)
+                agent = compile_agent(manifest, registries, agents=sub_agents)
+            except AgentCoreError as exc:
+                yield _error_event(str(exc))
+                return
+            except Exception:
+                yield _error_event("failed to prepare agent")
+                return
+
+            try:
+                async for event in agent.astream(
+                    req.input, eval_mode=req.eval_mode, thread_id=req.thread_id
+                ):
+                    events.append(event)
+                    if event.type == "answer":
+                        answer, status = event.detail, "completed"
+                    elif event.type == "limit":
+                        status = "timeout"
+                    yield f"data: {event.model_dump_json()}\n\n"
+            except AgentCoreError as exc:
+                yield _error_event(str(exc))
+                return
+            except Exception:
+                # Never leak internals/secrets/stack traces into the stream.
+                yield _error_event("internal error during run")
+                return
+
+            cost = await persist()
+            yield f"data: {json.dumps({'type': 'done', 'run_id': run_id, 'cost_usd': cost})}\n\n"
+        finally:
+            # Persist on every exit path, including client disconnect
+            # (GeneratorExit) — awaiting is allowed here, only yielding is not.
+            await persist()
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+# NOTE: the run history endpoints are unauthenticated and return raw inputs +
+# full traces (which may contain tool outputs / memory) across all callers. Do
+# not expose publicly until auth + per-user scoping land (Phase 11).
+@app.get("/api/runs")
+async def runs_list(limit: int = 50) -> dict:
+    records = await run_store.list(limit)
+    return {
+        "runs": [
+            {
+                "id": r.id,
+                "manifest_id": r.manifest_id,
+                "model": r.model,
+                "status": r.status,
+                "cost_usd": r.cost_usd,
+                "created_at": r.created_at,
+                "answer": r.answer,
+            }
+            for r in records
+        ]
+    }
+
+
+@app.get("/api/runs/{run_id}")
+async def runs_get(run_id: str) -> dict:
+    record = await run_store.get(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return record.model_dump()
+
+
+@app.get("/api/runs/{run_id}/export")
+async def runs_export(run_id: str) -> dict:
+    record = await run_store.get(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return record.model_dump()  # full trace, JSON
 
 
 def _error_event(detail: str) -> str:

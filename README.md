@@ -23,9 +23,11 @@ Multi-Agent Workbench & Code Sandbox. See [`PRD.md`](./PRD.md) and
   (`InMemoryVectorStore` + OpenAI embeddings). **MCP connector** adapts external
   MCP-server tools into `BaseTool`s. **Multi-agent**: a supervisor's `sub_agents`
   are exposed as `ask_<id>` tools (agents-as-tools) for delegation.
+  Every run is **persisted** with its full trace + token/cost (`RunStore`).
 - `apps/api` — FastAPI service: `/health`, `/api/tools`, `/api/agents/validate`,
-  `POST /api/runs` (SSE), `POST /api/sandbox/exec`, `GET/POST/DELETE /api/memory`,
-  `POST /api/index`; Dockerfile + compose `api` service.
+  `POST /api/runs` (SSE), `GET /api/runs` + `GET /api/runs/{id}[/export]`,
+  `POST /api/sandbox/exec`, `GET/POST/DELETE /api/memory`, `POST /api/index`;
+  Dockerfile + compose `api` service.
 - `infra/` — Postgres + the API via Docker Compose.
 
 Deferred to later phases: Next.js web UI; `EmbeddingSearchTool`+pgvector + MCP

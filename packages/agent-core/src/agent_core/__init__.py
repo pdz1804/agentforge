@@ -38,6 +38,13 @@ from .memory.mem0_provider import Mem0MemoryProvider
 from .models.anthropic import AnthropicModelProvider
 from .models.echo import EchoModelProvider
 from .models.openai import OpenAIModelProvider
+from .observability import (
+    InMemoryRunStore,
+    RunRecord,
+    RunStore,
+    token_cost,
+    usage_totals,
+)
 from .registry import Registries, Registry
 from .runtime import CompiledAgent, RunResult, SubAgentTool, TraceEvent, compile_agent
 from .sandbox.docker_executor import DockerCodeExecutor
@@ -110,6 +117,11 @@ __all__ = [
     "VectorHit",
     "StdioMCPConnector",
     "build_mcp_tools",
+    "RunRecord",
+    "RunStore",
+    "InMemoryRunStore",
+    "token_cost",
+    "usage_totals",
     "EchoModelProvider",
     "AnthropicModelProvider",
     "OpenAIModelProvider",
