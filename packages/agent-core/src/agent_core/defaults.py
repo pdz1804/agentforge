@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .embeddings import openai_embed
 from .memory.in_memory import InMemoryMemoryProvider
 from .memory.mem0_provider import Mem0MemoryProvider
 from .models.anthropic import AnthropicModelProvider
@@ -18,7 +19,9 @@ from .registry import Registries
 from .sandbox.docker_executor import DockerCodeExecutor
 from .tools.code_executor import CodeExecutorTool
 from .tools.echo import EchoTool
+from .tools.embedding_search import EmbeddingSearchTool
 from .tools.web_search import WebSearchTool
+from .vectorstore.in_memory import InMemoryVectorStore
 
 # The example echo agent's prompt. The packaged file `prompts/echo_agent.md` is
 # the single source of truth; the inline string is only a fallback for installs
@@ -49,6 +52,9 @@ def build_default_registries(prompts_dir: str | Path | None = None) -> Registrie
     registries.tools.register("echo", EchoTool())
     registries.tools.register("web_search", WebSearchTool())
     registries.tools.register("code_executor", CodeExecutorTool(DockerCodeExecutor()))
+    registries.tools.register(
+        "embedding_search", EmbeddingSearchTool(InMemoryVectorStore(), openai_embed)
+    )
     registries.models.register("echo", EchoModelProvider())
     registries.models.register("anthropic", AnthropicModelProvider())
     registries.models.register("openai", OpenAIModelProvider())

@@ -19,9 +19,12 @@ Multi-Agent Workbench & Code Sandbox. See [`PRD.md`](./PRD.md) and
   Python in a locked-down Docker sandbox — no network, no host access, non-root).
   Long-term **memory** via `MemoryProvider` (`in_memory` default, optional `mem0`):
   agents recall prior facts across runs (set a manifest `memory` block).
+  **`embedding_search`** tool: semantic search over an indexed corpus
+  (`InMemoryVectorStore` + OpenAI embeddings). **MCP connector** adapts external
+  MCP-server tools into `BaseTool`s.
 - `apps/api` — FastAPI service: `/health`, `/api/tools`, `/api/agents/validate`,
-  `POST /api/runs` (SSE), `POST /api/sandbox/exec`, `GET/POST/DELETE /api/memory`;
-  Dockerfile + compose `api` service.
+  `POST /api/runs` (SSE), `POST /api/sandbox/exec`, `GET/POST/DELETE /api/memory`,
+  `POST /api/index`; Dockerfile + compose `api` service.
 - `infra/` — Postgres + the API via Docker Compose.
 
 Deferred to later phases: Next.js web UI; `EmbeddingSearchTool`+pgvector + MCP

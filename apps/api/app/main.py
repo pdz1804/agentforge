@@ -192,3 +192,22 @@ async def memory_delete(
     prov = _memory_provider(provider)
     await prov.delete(_scope(scope), namespace, [id])
     return {"ok": True}
+
+
+class IndexRequest(BaseModel):
+    doc_id: str
+    text: str
+
+
+@app.post("/api/index")
+async def index_document(req: IndexRequest) -> dict:
+    """Embed + index a document into the default embedding_search corpus.
+
+    Needs OPENAI_API_KEY (embeddings); returns a structured error otherwise.
+    """
+    tool = registries.tools.get("embedding_search")
+    try:
+        await tool.index(req.doc_id, req.text)
+    except AgentCoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "doc_id": req.doc_id}

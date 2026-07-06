@@ -45,6 +45,14 @@ class BaseTool(ABC):
         """Validate raw kwargs against ``args_schema`` and return the model."""
         return self.args_schema(**kwargs)
 
+    def json_schema(self) -> dict[str, Any]:
+        """JSON schema for the tool's args, as exposed to the LLM.
+
+        Defaults to the Pydantic ``args_schema``; tools with a dynamic schema
+        (e.g. adapted MCP tools) override this.
+        """
+        return self.args_schema.model_json_schema()
+
     @abstractmethod
     async def run(self, **kwargs: Any) -> ToolResult:
         """Execute the tool. Implementations should call ``validate_args``."""
@@ -181,7 +189,31 @@ class CodeExecutor(ABC):
 
 
 # --------------------------------------------------------------------------- #
-# MCP — interface only; connector impl arrives in Phase 3b
+# Vector store — semantic search backend (Phase 3b)
+# --------------------------------------------------------------------------- #
+class VectorHit(BaseModel):
+    id: str
+    score: float
+    text: str = ""
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class VectorStore(ABC):
+    """A vector index. InMemory (default) + pgvector (future) implement this."""
+
+    @abstractmethod
+    async def add(
+        self, id: str, vector: list[float], text: str = "", meta: dict[str, Any] | None = None
+    ) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def search(self, vector: list[float], k: int = 5) -> list[VectorHit]:
+        raise NotImplementedError
+
+
+# --------------------------------------------------------------------------- #
+# MCP — connector adapts external MCP tools to BaseTool (Phase 3b)
 # --------------------------------------------------------------------------- #
 class MCPConnector(ABC):
     """Discovers tools from an MCP server and adapts them to BaseTool."""

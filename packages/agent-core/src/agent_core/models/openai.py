@@ -23,7 +23,7 @@ def tools_to_openai(tools: list[BaseTool]) -> list[dict] | None:
             "function": {
                 "name": t.name,
                 "description": t.description,
-                "parameters": t.args_schema.model_json_schema(),
+                "parameters": t.json_schema(),
             },
         }
         for t in tools

@@ -23,7 +23,7 @@ def tools_to_anthropic(tools: list[BaseTool]) -> list[dict] | None:
         {
             "name": t.name,
             "description": t.description,
-            "input_schema": t.args_schema.model_json_schema(),
+            "input_schema": t.json_schema(),
         }
         for t in tools
     ]

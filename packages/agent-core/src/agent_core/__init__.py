@@ -28,8 +28,11 @@ from .interfaces import (
     Scope,
     ToolCall,
     ToolResult,
+    VectorHit,
+    VectorStore,
 )
 from .loader import load_manifest_dict, load_manifest_file, resolve_manifest
+from .mcp.connector import StdioMCPConnector, build_mcp_tools
 from .memory.in_memory import InMemoryMemoryProvider
 from .memory.mem0_provider import Mem0MemoryProvider
 from .models.anthropic import AnthropicModelProvider
@@ -48,7 +51,9 @@ from .schema import (
 )
 from .tools.code_executor import CodeExecArgs, CodeExecutorTool
 from .tools.echo import EchoArgs, EchoTool
+from .tools.embedding_search import EmbeddingSearchArgs, EmbeddingSearchTool
 from .tools.web_search import WebSearchArgs, WebSearchTool
+from .vectorstore.in_memory import InMemoryVectorStore
 
 __version__ = "0.1.0"
 
@@ -97,6 +102,13 @@ __all__ = [
     "CodeExecutorTool",
     "CodeExecArgs",
     "DockerCodeExecutor",
+    "EmbeddingSearchTool",
+    "EmbeddingSearchArgs",
+    "InMemoryVectorStore",
+    "VectorStore",
+    "VectorHit",
+    "StdioMCPConnector",
+    "build_mcp_tools",
     "EchoModelProvider",
     "AnthropicModelProvider",
     "OpenAIModelProvider",

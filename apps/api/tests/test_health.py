@@ -19,7 +19,10 @@ def test_health_ok():
 def test_list_tools():
     resp = client.get("/api/tools")
     assert resp.status_code == 200
-    assert "echo" in resp.json()["tools"]
+    tools = resp.json()["tools"]
+    assert "echo" in tools
+    assert "embedding_search" in tools  # Phase 3b
+    assert "code_executor" in tools
 
 
 def test_validate_valid_manifest():
