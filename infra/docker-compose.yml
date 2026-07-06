@@ -1,0 +1,23 @@
+# AgentForge local infrastructure (Phase 0).
+# Postgres backs manifests, runs, traces, checkpoints, and eval reports.
+# The sandbox runtime arrives in Phase 4.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: agentforge-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agentforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentforge}
+      POSTGRES_DB: ${POSTGRES_DB:-agentforge}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - agentforge_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agentforge}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  agentforge_pgdata:

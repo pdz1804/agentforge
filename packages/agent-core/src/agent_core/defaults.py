@@ -1,0 +1,59 @@
+"""Default registry wiring.
+
+``build_default_registries`` returns a ``Registries`` pre-populated with the
+Phase-1 built-ins. Later phases extend this by registering more tools / model
+providers / memory backends — without editing the core.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from .models.anthropic import AnthropicModelProvider
+from .models.echo import EchoModelProvider
+from .registry import Registries
+from .tools.echo import EchoTool
+
+# The example echo agent's prompt. The packaged file `prompts/echo_agent.md` is
+# the single source of truth; the inline string is only a fallback for installs
+# where the prompts directory is not shipped (e.g. a wheel without package data).
+_ECHO_PROMPT_KEY = "prompts/echo_agent.md"
+_ECHO_PROMPT_FALLBACK = (
+    "You are a friendly echo agent. Repeat the user's message back to them.\n"
+)
+
+
+def _echo_prompt_text() -> str:
+    # defaults.py -> agent_core -> src -> <package root>/prompts/echo_agent.md
+    path = Path(__file__).resolve().parents[2] / "prompts" / "echo_agent.md"
+    if path.exists():
+        return path.read_text(encoding="utf-8")
+    return _ECHO_PROMPT_FALLBACK
+
+
+def build_default_registries(prompts_dir: str | Path | None = None) -> Registries:
+    """Create registries with the Phase-1 built-ins registered.
+
+    If ``prompts_dir`` is given, every ``*.md`` under it is also registered as a
+    prompt keyed by its path relative to the directory's parent
+    (e.g. ``prompts/echo_agent.md``).
+    """
+    registries = Registries()
+
+    registries.tools.register("echo", EchoTool())
+    registries.models.register("echo", EchoModelProvider())
+    registries.models.register("anthropic", AnthropicModelProvider())
+    registries.prompts.register(_ECHO_PROMPT_KEY, _echo_prompt_text())
+
+    if prompts_dir is not None:
+        load_prompts_dir(registries, prompts_dir)
+
+    return registries
+
+
+def load_prompts_dir(registries: Registries, prompts_dir: str | Path) -> None:
+    """Register every ``*.md`` file under ``prompts_dir`` as a prompt."""
+    base = Path(prompts_dir)
+    for path in base.rglob("*.md"):
+        key = path.relative_to(base.parent).as_posix()
+        registries.prompts.register(key, path.read_text(encoding="utf-8"), overwrite=True)
