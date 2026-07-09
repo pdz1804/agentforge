@@ -1,0 +1,104 @@
+name: CI
+
+# Build-blocking gates for AgentForge (PRD §14): lint, unit/integration tests
+# for agent-core + the API, the Docker sandbox-isolation matrix (PRD §14.4/
+# §15), and the web build. Live-LLM tests are never run here -- no API keys
+# are configured in CI and the relevant tests are offline-by-fakes already
+# (see packages/agent-core/tests/test_providers.py, test_web_search.py,
+# test_embedding_search.py).
+on:
+  push:
+  pull_request:
+
+jobs:
+  python-tests:
+    name: python-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            packages/agent-core/pyproject.toml
+            apps/api/requirements.txt
+
+      - name: Install agent-core (editable, + provider/dev extras) and API deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "packages/agent-core[dev,openai,anthropic]"
+          pip install -r apps/api/requirements.txt
+          pip install ruff
+
+      - name: Lint (ruff)
+        # packages/agent-core/pyproject.toml carries the [tool.ruff] config;
+        # apps/api has no override and lints clean under ruff's defaults.
+        run: ruff check packages/agent-core apps/api
+
+      - name: Test agent-core (unit + integration, excluding the Docker sandbox matrix)
+        # The sandbox-security suite needs a Docker daemon; it runs as its own
+        # job below so a missing/broken daemon fails loud instead of being
+        # silently absorbed into this job's pass/fail signal.
+        run: pytest packages/agent-core --ignore=packages/agent-core/tests/test_sandbox_security.py -v
+
+      - name: Test API (FastAPI TestClient, offline echo model + in-memory store)
+        run: pytest apps/api -v
+
+  sandbox-security:
+    name: sandbox-security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: packages/agent-core/pyproject.toml
+
+      - name: Install agent-core (editable, dev extra only -- no LLM providers needed)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "packages/agent-core[dev]"
+
+      - name: Verify Docker daemon is available
+        # ubuntu-latest ships Docker pre-installed and running. Fail loud here
+        # rather than letting the suite's own `skipif(not docker_available)`
+        # silently turn a broken/missing daemon into an all-green no-op --
+        # this is the PRD §14.4 build-blocking isolation gate, so it must
+        # actually run, not skip.
+        run: docker info
+
+      - name: Sandbox isolation matrix (PRD §14.4 / §15 -- real Docker containers)
+        # Pulls python:3.11-slim on first use and asserts: network egress
+        # blocked, host filesystem write denied, non-allowlisted imports fail,
+        # infinite loops are timeout-killed, stdout is byte-capped, the
+        # process runs as non-root, and a memory bomb is OOM-killed.
+        run: pytest packages/agent-core/tests/test_sandbox_security.py -v
+
+  web-build:
+    name: web-build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          # No committed lockfile (package-lock.json/yarn.lock/pnpm-lock.yaml)
+          # for apps/web, so `actions/setup-node`'s npm cache (which keys off
+          # a lockfile) and `npm ci` are not usable here -- see the `npm
+          # install` step below.
+
+      - name: Install dependencies
+        # `npm ci` requires a committed lockfile, which this app does not
+        # have; `npm install` resolves and installs against package.json.
+        run: npm install
+
+      - name: Build (Next.js production build must succeed)
+        run: npm run build
