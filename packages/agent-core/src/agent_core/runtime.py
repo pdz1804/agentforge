@@ -311,6 +311,7 @@ class CompiledAgent:
         """
         memories = await self._retrieve(user_input, eval_mode)
         answer: str | None = None
+        last_step = 0
         token = _RUN_EVAL.set(eval_mode)
         try:
             async with asyncio.timeout(self.manifest.limits.wall_clock_s):
@@ -320,10 +321,27 @@ class CompiledAgent:
                     stream_mode="updates",
                 ):
                     for node_output in update.values():
+                        if node_output.get("steps") is not None:
+                            last_step = node_output["steps"]
                         for event in node_output.get("trace", []):
                             if event.type == "answer":
                                 answer = event.detail
                             yield event
+            # Graph ended normally. If it stopped without an answer (step budget
+            # reached while a tool was still pending, or the model took no
+            # action), emit an explicit terminal ``limit`` event so consumers
+            # never see a silent, answer-less run.
+            if answer is None:
+                yield TraceEvent(
+                    step=last_step,
+                    type="limit",
+                    node="runtime",
+                    detail=(
+                        f"stopped after {last_step} step(s) without an answer "
+                        f"(max_steps={self.manifest.limits.max_steps} reached); "
+                        "increase limits.max_steps to allow more tool calls"
+                    ),
+                )
         except TimeoutError:
             yield TraceEvent(
                 step=-1,

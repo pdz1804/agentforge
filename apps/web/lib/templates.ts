@@ -35,7 +35,7 @@ prompt_ref: prompts/assistant.md
 tools:
   - web_search
 limits:
-  max_steps: 4
+  max_steps: 6
 `,
   },
   {

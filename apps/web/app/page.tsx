@@ -23,7 +23,7 @@ export default function Page() {
   const [validity, setValidity] = useState<{ ok: boolean; msg: string } | null>(null);
   const [events, setEvents] = useState<TraceEvent[]>([]);
   const [answer, setAnswer] = useState<string | null>(null);
-  const [status, setStatus] = useState<"idle" | "running" | "done" | "error">("idle");
+  const [status, setStatus] = useState<"idle" | "running" | "done" | "stopped" | "error">("idle");
   const [runError, setRunError] = useState<string | null>(null);
   const [cost, setCost] = useState<number | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
@@ -100,14 +100,20 @@ export default function Page() {
             setRunError(ev.detail ?? "error");
             setStatus("error");
           }
+          if (ev.type === "limit") {
+            // The run stopped without an answer (step/time budget). Surface the
+            // reason instead of silently finishing.
+            setRunError(ev.detail ?? "run stopped before answering");
+            setStatus((s) => (s === "error" ? s : "stopped"));
+          }
           if (ev.type === "done") {
             setCost(ev.cost_usd ?? 0);
-            setStatus((s) => (s === "error" ? s : "done"));
+            setStatus((s) => (s === "error" || s === "stopped" ? s : "done"));
           }
         },
         ctrl.signal,
       );
-      setStatus((s) => (s === "error" ? s : "done"));
+      setStatus((s) => (s === "error" || s === "stopped" ? s : "done"));
     } catch (e) {
       if ((e as Error).name !== "AbortError") {
         setRunError((e as Error).message);
@@ -227,7 +233,7 @@ export default function Page() {
               {runs.length === 0 && <p className="muted" style={{ padding: 14 }}>No runs yet.</p>}
               {runs.map((r) => (
                 <div className="hist-row" key={r.id}>
-                  <span className={`pill ${r.status === "completed" ? "ok" : r.status === "timeout" ? "warn" : "bad"}`}>
+                  <span className={`pill ${r.status === "completed" ? "ok" : r.status === "error" ? "bad" : "warn"}`}>
                     {r.status}
                   </span>
                   <span className="id">{r.id.slice(0, 8)}</span>
@@ -245,7 +251,7 @@ export default function Page() {
             <h2>
               Run output{" "}
               <span
-                className={`pill ${status === "done" ? "ok" : status === "error" ? "bad" : status === "running" ? "warn" : ""}`}
+                className={`pill ${status === "done" ? "ok" : status === "error" ? "bad" : status === "running" || status === "stopped" ? "warn" : ""}`}
                 data-testid="run-status"
               >
                 {status}

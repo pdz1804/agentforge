@@ -88,6 +88,30 @@ def test_max_steps_limit_terminates_loop():
     assert result.steps == 3  # bounded, no infinite loop
 
 
+def test_astream_emits_limit_event_when_no_answer():
+    # A model that never answers (always asks for a tool) must not end the stream
+    # silently: the run has to emit a terminal ``limit`` event so callers know it
+    # stopped without an answer rather than seeing an empty, answer-less run.
+    registries = build_default_registries()
+    registries.models.register(
+        "scripted",
+        ScriptedModelProvider(
+            [ModelResponse(tool_calls=[ToolCall(name="echo", args={"text": "again"})])]
+        ),
+    )
+    manifest = load_manifest_dict(_manifest("scripted", ["echo"], max_steps=2))
+    resolve_manifest(manifest, registries)
+    agent = compile_agent(manifest, registries)
+
+    async def collect():
+        return [ev async for ev in agent.astream("go")]
+
+    events = asyncio.run(collect())
+    assert events[-1].type == "limit"  # terminal, explains why it stopped
+    assert "max_steps" in (events[-1].detail or "")
+    assert not any(e.type == "answer" for e in events)
+
+
 def test_bad_tool_args_become_recoverable_error():
     # A model can emit out-of-range args; that must feed an error back into the
     # loop (so the model can recover), not crash the run.

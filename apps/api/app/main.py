@@ -101,7 +101,9 @@ async def run_agent(req: RunRequest) -> StreamingResponse:
     async def event_stream():
         events: list = []
         answer: str | None = None
-        status = "error"
+        # "incomplete" until a terminal event decides otherwise; "error" is set
+        # only on a real failure (below), never as the default for a clean run.
+        status = "incomplete"
         persisted = False
 
         async def persist() -> float:
@@ -144,9 +146,11 @@ async def run_agent(req: RunRequest) -> StreamingResponse:
                     resolve_manifest(sub, registries, known_agents=known)
                 agent = compile_agent(manifest, registries, agents=sub_agents)
             except AgentCoreError as exc:
+                status = "error"
                 yield _error_event(str(exc))
                 return
             except Exception:
+                status = "error"
                 yield _error_event("failed to prepare agent")
                 return
 
@@ -158,13 +162,17 @@ async def run_agent(req: RunRequest) -> StreamingResponse:
                     if event.type == "answer":
                         answer, status = event.detail, "completed"
                     elif event.type == "limit":
-                        status = "timeout"
+                        # Wall-clock overrun is a timeout; a step-budget stop is
+                        # "incomplete" (stopped before answering) — neither is an error.
+                        status = "timeout" if "wall_clock" in (event.detail or "") else "incomplete"
                     yield f"data: {event.model_dump_json()}\n\n"
             except AgentCoreError as exc:
+                status = "error"
                 yield _error_event(str(exc))
                 return
             except Exception:
                 # Never leak internals/secrets/stack traces into the stream.
+                status = "error"
                 yield _error_event("internal error during run")
                 return
 
