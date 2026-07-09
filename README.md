@@ -5,7 +5,7 @@ Multi-Agent Workbench & Code Sandbox. See [`PRD.md`](./PRD.md) and
 
 ## Status
 
-**Phase 0 (backend slice) + Phase 1 + Phase 2** implemented:
+**Phases 0–6, 8 (partial) implemented. Phase 7 (3D graph) in-progress.**
 
 - `packages/agent-core` — declarative Agent Manifest schema, pluggable registries
   (tools / prompts / models / memory / MCP), core interfaces (`BaseTool`,
@@ -13,27 +13,25 @@ Multi-Agent Workbench & Code Sandbox. See [`PRD.md`](./PRD.md) and
   loader + reference resolver, built-in Echo tool / model providers, and the
   **LangGraph runtime** (`compile_agent` → agent↔tools loop, `TraceEvent` bus,
   `arun` / `astream`, `max_steps` + `wall_clock_s` limits, eval-mode temp=0).
-  Model providers are registry-selected per manifest (`model.provider`):
-  **`anthropic`** and **`openai`** (both with tool-use), plus an offline
-  **`echo`**. Tools: **`web_search`** (Tavily) and **`code_executor`** (runs
-  Python in a locked-down Docker sandbox — no network, no host access, non-root).
-  Long-term **memory** via `MemoryProvider` (`in_memory` default, optional `mem0`):
-  agents recall prior facts across runs (set a manifest `memory` block).
-  **`embedding_search`** tool: semantic search over an indexed corpus
-  (`InMemoryVectorStore` + OpenAI embeddings). **MCP connector** adapts external
-  MCP-server tools into `BaseTool`s. **Multi-agent**: a supervisor's `sub_agents`
-  are exposed as `ask_<id>` tools (agents-as-tools) for delegation.
-  Every run is **persisted** with its full trace + token/cost (`RunStore`).
-- `apps/api` — FastAPI service: `/health`, `/api/tools`, `/api/agents/validate`,
+  Model providers: **`anthropic`** and **`openai`** (both tool-use), **`echo`** (offline).
+  Tools: **`web_search`** (Tavily), **`code_executor`** (Docker sandbox, deny-by-default),
+  **`embedding_search`** (semantic search + InMemoryVectorStore), **`http_fetch`**.
+  Long-term **memory** (`InMemoryMemoryProvider` default, optional `mem0`). **MCP connector**.
+  **Multi-agent supervisor** with `sub_agents` exposed as delegation tools. **Run persistence** 
+  with full trace + token/cost accounting (`RunStore`). **Docker code sandbox** with 
+  security matrix (8-row test, passed).
+- `apps/api` — FastAPI on **port 8077** (configurable): `/health`, `/api/tools`, `/api/agents/validate`,
   `POST /api/runs` (SSE), `GET /api/runs` + `GET /api/runs/{id}[/export]`,
   `POST /api/sandbox/exec`, `GET/POST/DELETE /api/memory`, `POST /api/index`;
-  Dockerfile + compose `api` service.
+  Dockerfile + Docker Compose.
+- `apps/web` — **Next.js 14 Agent Builder UI**: YAML manifest editor, validation, live SSE run panel,
+  trace view with **3D execution graph** (Three.js node/edge animation, timeline scrubber, reduced-motion
+  fallback), run history, **dark/light theme toggle**, **Builder/About tabs**, intro page.
+  Proxies `/api` to FastAPI backend (no CORS). Playwright e2e tests included.
 - `infra/` — Postgres + the API via Docker Compose.
 
-Deferred to later phases: Next.js web UI; `EmbeddingSearchTool`+pgvector + MCP
-connector (Phase 3b); memory + durable checkpointer (Phase 5); eval harness
-(Phase 9). The sandbox uses Docker; an E2B backend and docker-socket mounting
-for the containerized API are future work.
+Deferred: Phase 9 (Agent eval harness — in development); Phase 10 (CI test pyramid);
+Phase 11 (auth); Phase 12 (cross-product check). E2B sandbox backend deferred.
 
 ### Choosing a provider
 
@@ -55,19 +53,27 @@ suites/                # eval task suites (Phase 9)
 
 ## Web UI (`apps/web`)
 
-Next.js 14 (App Router) Agent Builder. Authors a manifest (YAML editor + template
-gallery), validates it, runs it with the trace streamed live over SSE, lists run
-history, and reconstructs the run as a Three.js 3D execution graph (2D SVG +
-reduced-motion + no-WebGL fallback). It proxies `/api` + `/health` to the FastAPI
-backend via Next rewrites (single origin, no CORS). Playwright e2e covers page load,
-validation, a deterministic echo run, and a live OpenAI + `web_search` run.
+**Next.js 14 Agent Builder** with live dashboard and 3D execution visualization.
+
+**Features:**
+- **Manifest Editor**: YAML editor with template gallery; real-time validation; syntax highlighting.
+- **Live Run Panel**: Stream agent execution over SSE; show tool calls, model responses, and errors in real-time.
+- **3D Execution Graph** (Phase 7): Three.js visualization of agent nodes, tool nodes, and message flow. 
+  Timeline scrubber replays the run step-by-step. Nodes pulse on activation; edges highlight tool calls.
+  2D SVG + reduced-motion fallback (no WebGL required).
+- **Run History**: List all runs (newest first) with status, model, timestamp, token usage. Click to view 
+  full trace or export JSON.
+- **Theme Toggle**: Dark/light mode with persistent preference.
+- **Tabs**: Builder (editor + run) and About (docs/help).
+- **API Proxy**: Single origin — proxies `/api` to the FastAPI backend via Next rewrites (no CORS).
 
 ```bash
-# with the API running on :8077 (see below)
+# Assuming API is running on :8077 (or set API_PORT in .env)
 cd apps/web
 npm install
-npm run build && npm start          # http://localhost:3000
-npx playwright test                 # e2e (set SKIP_LIVE=1 to skip the billed run)
+npm run dev              # Development server on http://localhost:3000
+npm run build && npm start  # Production build
+npx playwright test      # E2E tests (set SKIP_LIVE=1 to skip billed API calls)
 ```
 
 ## Quickstart
@@ -86,11 +92,17 @@ pip install -r apps/api/requirements.txt
 pytest packages/agent-core
 pytest apps/api
 
-# 4. Run the API
-uvicorn app.main:app --reload --app-dir apps/api
-# -> http://127.0.0.1:8000/health
+# 4. Run the API (port 8077 by default; configurable via API_PORT env)
+uvicorn app.main:app --reload --port 8077 --app-dir apps/api
+# -> http://127.0.0.1:8077/health
 
-# 5. (optional) Start Postgres
+# 5. Run the web UI (in a new terminal)
+cd apps/web
+npm install
+npm run dev
+# -> http://localhost:3000 (proxies API to :8077)
+
+# 6. (optional) Start Postgres for persistence
 cp .env.example .env
 docker compose -f infra/docker-compose.yml up -d
 ```
