@@ -3,6 +3,14 @@
 Exposes the Unified Agent Core over HTTP: a health check, the registered tool
 list, and a manifest-validation endpoint that exercises the loader + resolver
 end to end.
+
+Additive (PRD Phase 11 — opt-in hardening; see auth.py, rate_limit.py,
+redaction.py): sensitive endpoints (run execution + history, eval, sandbox,
+memory, index) sit behind `require_api_key`, a no-op unless
+`AGENTFORGE_API_KEY` is set, so the local demo and existing tests are
+unaffected by default. `/api/runs`, `/api/eval`, and `/api/sandbox/exec` are
+additionally per-IP rate limited, and secrets are redacted from the run
+trace/error stream and from all log output.
 """
 
 from __future__ import annotations
@@ -10,17 +18,22 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
 import json
+import logging
 import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import HTTPException
+
+from app.auth import require_api_key
+from app.rate_limit import eval_rate_limit, runs_rate_limit, sandbox_rate_limit
+from app.redaction import RedactingLogFilter, redact_secrets
 
 from agent_core import (
     __version__ as core_version,
@@ -61,6 +74,12 @@ async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
     if close is not None:
         await close()
 
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+# Scrubs secrets (API keys, bearer tokens, ...) from every log record
+# process-wide, in case one ends up in an exception message (PRD Phase 11).
+logging.getLogger().addFilter(RedactingLogFilter())
 
 app = FastAPI(title="AgentForge API", version=core_version, lifespan=_lifespan)
 
@@ -127,7 +146,7 @@ class RunRequest(BaseModel):
     agents: list[dict] = []  # sub-agent manifests the supervisor may delegate to
 
 
-@app.post("/api/runs")
+@app.post("/api/runs", dependencies=[Depends(require_api_key), Depends(runs_rate_limit)])
 async def run_agent(req: RunRequest) -> StreamingResponse:
     """Run an agent, streaming trace events as Server-Sent Events.
 
@@ -192,6 +211,7 @@ async def run_agent(req: RunRequest) -> StreamingResponse:
                 yield _error_event(str(exc))
                 return
             except Exception:
+                logger.exception("failed to prepare agent for run %s", run_id)
                 status = "error"
                 yield _error_event("failed to prepare agent")
                 return
@@ -207,13 +227,16 @@ async def run_agent(req: RunRequest) -> StreamingResponse:
                         # Wall-clock overrun is a timeout; a step-budget stop is
                         # "incomplete" (stopped before answering) — neither is an error.
                         status = "timeout" if "wall_clock" in (event.detail or "") else "incomplete"
-                    yield f"data: {event.model_dump_json()}\n\n"
+                    # Tool outputs may echo back secrets (e.g. a misconfigured
+                    # tool leaking an env var); scrub before it hits the wire.
+                    yield f"data: {redact_secrets(event.model_dump_json())}\n\n"
             except AgentCoreError as exc:
                 status = "error"
                 yield _error_event(str(exc))
                 return
             except Exception:
                 # Never leak internals/secrets/stack traces into the stream.
+                logger.exception("run %s failed", run_id)
                 status = "error"
                 yield _error_event("internal error during run")
                 return
@@ -237,10 +260,11 @@ async def run_agent(req: RunRequest) -> StreamingResponse:
     )
 
 
-# NOTE: the run history endpoints are unauthenticated and return raw inputs +
-# full traces (which may contain tool outputs / memory) across all callers. Do
-# not expose publicly until auth + per-user scoping land (Phase 11).
-@app.get("/api/runs")
+# The run history endpoints return raw inputs + full traces (which may
+# contain tool outputs / memory) across all callers, so they sit behind
+# require_api_key like the other sensitive endpoints (no-op unless
+# AGENTFORGE_API_KEY is set).
+@app.get("/api/runs", dependencies=[Depends(require_api_key)])
 async def runs_list(limit: int = 50) -> dict:
     records = await run_store.list(limit)
     return {
@@ -259,7 +283,7 @@ async def runs_list(limit: int = 50) -> dict:
     }
 
 
-@app.get("/api/runs/{run_id}")
+@app.get("/api/runs/{run_id}", dependencies=[Depends(require_api_key)])
 async def runs_get(run_id: str) -> dict:
     record = await run_store.get(run_id)
     if record is None:
@@ -267,7 +291,7 @@ async def runs_get(run_id: str) -> dict:
     return record.model_dump()
 
 
-@app.get("/api/runs/{run_id}/export")
+@app.get("/api/runs/{run_id}/export", dependencies=[Depends(require_api_key)])
 async def runs_export(run_id: str) -> dict:
     record = await run_store.get(run_id)
     if record is None:
@@ -278,7 +302,7 @@ async def runs_export(run_id: str) -> dict:
 def _error_event(detail: str) -> str:
     import json
 
-    return f'data: {{"type": "error", "detail": {json.dumps(detail)}}}\n\n'
+    return f'data: {{"type": "error", "detail": {json.dumps(redact_secrets(detail))}}}\n\n'
 
 
 class SandboxRequest(BaseModel):
@@ -286,14 +310,16 @@ class SandboxRequest(BaseModel):
     timeout_s: int = Field(default=15, ge=1, le=60)
 
 
-@app.post("/api/sandbox/exec")
+@app.post(
+    "/api/sandbox/exec",
+    dependencies=[Depends(require_api_key), Depends(sandbox_rate_limit)],
+)
 async def sandbox_exec(req: SandboxRequest) -> dict:
     """Run Python in the Docker sandbox and return the ExecResult.
 
     Network is always denied on this endpoint (no caller-controlled egress).
     Requires the docker CLI where the API runs; inside a container this needs the
-    docker socket mounted (deferred deployment concern). NOTE: no auth/rate-limit
-    yet (Phase 11) — do not expose publicly until then.
+    docker socket mounted (deferred deployment concern).
     """
     executor = DockerCodeExecutor()
     try:
@@ -326,10 +352,10 @@ class MemoryAddRequest(BaseModel):
     namespace: str = "default"
 
 
-# NOTE: the memory endpoints are unauthenticated and honor caller-supplied
-# scope/namespace — a caller can read/delete any bucket. Do not expose publicly
-# until auth + per-user scoping land (Phase 11).
-@app.get("/api/memory")
+# The memory endpoints honor caller-supplied scope/namespace — a caller can
+# read/delete any bucket — so they sit behind require_api_key like the other
+# sensitive endpoints (no-op unless AGENTFORGE_API_KEY is set).
+@app.get("/api/memory", dependencies=[Depends(require_api_key)])
 async def memory_list(
     provider: str = "in_memory",
     scope: str = "user",
@@ -342,14 +368,14 @@ async def memory_list(
     return {"items": [i.model_dump() for i in items]}
 
 
-@app.post("/api/memory")
+@app.post("/api/memory", dependencies=[Depends(require_api_key)])
 async def memory_add(req: MemoryAddRequest) -> dict:
     prov = _memory_provider(req.provider)
     await prov.add(_scope(req.scope), req.namespace, [MemoryItem(text=req.text)])
     return {"ok": True}
 
 
-@app.delete("/api/memory")
+@app.delete("/api/memory", dependencies=[Depends(require_api_key)])
 async def memory_delete(
     id: str,
     provider: str = "in_memory",
@@ -366,7 +392,7 @@ class IndexRequest(BaseModel):
     text: str
 
 
-@app.post("/api/index")
+@app.post("/api/index", dependencies=[Depends(require_api_key)])
 async def index_document(req: IndexRequest) -> dict:
     """Embed + index a document into the default embedding_search corpus.
 
@@ -427,7 +453,10 @@ class EvalRequest(BaseModel):
         return self
 
 
-@app.post("/api/eval")
+@app.post(
+    "/api/eval",
+    dependencies=[Depends(require_api_key), Depends(eval_rate_limit)],
+)
 async def run_eval(req: EvalRequest) -> dict:
     """Run a manifest's dev + held-out suites and return the side-by-side report.
 

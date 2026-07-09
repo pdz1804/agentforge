@@ -1,6 +1,16 @@
 // Thin client for the AgentForge backend. Same-origin (Next rewrites proxy to
 // the FastAPI), so paths are relative.
 
+// Phase 11 hardening: when the API is deployed with AGENTFORGE_API_KEY set,
+// the matching key must be exposed to the client build as
+// NEXT_PUBLIC_AGENTFORGE_API_KEY so requests to protected endpoints carry it.
+// Unset (the default/local-demo case) means no header is sent, matching the
+// API's default-open behavior.
+function authHeaders(): Record<string, string> {
+  const key = process.env.NEXT_PUBLIC_AGENTFORGE_API_KEY;
+  return key ? { "X-API-Key": key } : {};
+}
+
 export type TraceEvent = {
   step?: number;
   type: "run_started" | "model" | "tool" | "answer" | "limit" | "error" | "done";
@@ -30,7 +40,7 @@ export type Health = {
 };
 
 export async function getHealth(): Promise<Health> {
-  const r = await fetch("/health", { cache: "no-store" });
+  const r = await fetch("/health", { cache: "no-store", headers: authHeaders() });
   if (!r.ok) throw new Error(`health ${r.status}`);
   return r.json();
 }
@@ -40,7 +50,7 @@ export async function validateManifest(
 ): Promise<{ ok: boolean; id?: string; error?: string }> {
   const r = await fetch("/api/agents/validate", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ manifest }),
   });
   return r.json();
@@ -91,7 +101,7 @@ export type EvalResponse = {
 };
 
 export async function listSuites(): Promise<EvalSuite[]> {
-  const r = await fetch("/api/suites", { cache: "no-store" });
+  const r = await fetch("/api/suites", { cache: "no-store", headers: authHeaders() });
   if (!r.ok) throw new Error(`suites ${r.status}`);
   const j = await r.json();
   return j.suites ?? [];
@@ -104,7 +114,7 @@ export async function runEval(body: {
 }): Promise<EvalResponse> {
   const r = await fetch("/api/eval", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
   });
   if (!r.ok) {
@@ -122,7 +132,7 @@ export async function runEval(body: {
 }
 
 export async function listRuns(limit = 20): Promise<RunSummary[]> {
-  const r = await fetch(`/api/runs?limit=${limit}`, { cache: "no-store" });
+  const r = await fetch(`/api/runs?limit=${limit}`, { cache: "no-store", headers: authHeaders() });
   if (!r.ok) return [];
   const j = await r.json();
   return j.runs ?? [];
@@ -136,7 +146,7 @@ export async function runAgent(
 ): Promise<void> {
   const r = await fetch("/api/runs", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
     signal,
   });
