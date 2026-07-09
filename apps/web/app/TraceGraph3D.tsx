@@ -50,7 +50,7 @@ function NodeMesh({ node, active }: { node: GraphNode; active: boolean }) {
     const pulse = active ? 1 + Math.sin(t * 6) * 0.12 : 1;
     ref.current.scale.setScalar(pulse);
   });
-  const color = node.kind === "agent" ? "#6b8afd" : active ? "#d29922" : "#3fb950";
+  const color = node.kind === "agent" ? "#7c93ff" : active ? "#e2a54a" : "#4ec27a";
   const size = node.kind === "agent" ? 0.55 : 0.36;
   return (
     <mesh ref={ref} position={pos}>
@@ -70,7 +70,7 @@ function Edge({ to }: { to: GraphNode }) {
   return (
     <mesh position={mid} rotation={[0, 0, angle]}>
       <boxGeometry args={[len, 0.02, 0.02]} />
-      <meshStandardMaterial color="#283040" />
+      <meshStandardMaterial color="#313a4d" />
     </mesh>
   );
 }
@@ -112,7 +112,7 @@ function Fallback2D({ nodes, activeId }: { nodes: GraphNode[]; activeId: string 
             y1={cy}
             x2={cx + Math.cos(n.angle) * R}
             y2={cy + Math.sin(n.angle) * R}
-            stroke="#283040"
+            stroke="#313a4d"
             strokeWidth={2}
           />
         ))}
@@ -120,11 +120,11 @@ function Fallback2D({ nodes, activeId }: { nodes: GraphNode[]; activeId: string 
         const x = n.kind === "agent" ? cx : cx + Math.cos(n.angle) * R;
         const y = n.kind === "agent" ? cy : cy + Math.sin(n.angle) * R;
         const active = activeId === n.id;
-        const fill = n.kind === "agent" ? "#6b8afd" : active ? "#d29922" : "#3fb950";
+        const fill = n.kind === "agent" ? "#7c93ff" : active ? "#e2a54a" : "#4ec27a";
         return (
           <g key={n.id}>
             <circle cx={x} cy={y} r={n.kind === "agent" ? 20 : 14} fill={fill} opacity={active ? 1 : 0.75} />
-            <text x={x} y={y + (n.kind === "agent" ? 34 : 26)} fill="#9aa7b8" fontSize="10" textAnchor="middle">
+            <text x={x} y={y + (n.kind === "agent" ? 34 : 26)} fill="#8b95a7" fontSize="10" textAnchor="middle">
               {n.id}
             </text>
           </g>

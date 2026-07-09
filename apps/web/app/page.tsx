@@ -13,6 +13,18 @@ import {
 } from "@/lib/api";
 import { TEMPLATES } from "@/lib/templates";
 import TraceGraph3D from "./TraceGraph3D";
+import {
+  CheckIcon,
+  DocIcon,
+  GraphIcon,
+  HistoryIcon,
+  LogoMark,
+  OutputIcon,
+  PlayIcon,
+  StopIcon,
+  ToolIcon,
+  TraceIcon,
+} from "./icons";
 
 export default function Page() {
   const [health, setHealth] = useState<Health | null>(null);
@@ -136,21 +148,35 @@ export default function Page() {
   return (
     <>
       <div className="topbar">
-        <span className={`dot ${health ? "ok" : ""}`} data-testid="health-dot" />
-        <h1>AgentForge — Agent Builder</h1>
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true">
+            <LogoMark />
+          </span>
+          <h1>
+            AgentForge
+            <span className="brand-sub">Agent Builder</span>
+          </h1>
+        </div>
         <span className="spacer" />
+        <span className="status-chip">
+          <span className={`dot ${health ? "ok" : ""}`} data-testid="health-dot" />
+          <span className="state">{health ? "Online" : "Offline"}</span>
+        </span>
         <span className="meta" data-testid="health-meta">
           {health
             ? `core ${health.core_version} · models: ${health.models.join(", ")} · tools: ${health.tools.length}`
-            : "backend offline"}
+            : "backend offline · core —"}
         </span>
       </div>
 
       <div className="layout">
         {/* LEFT: authoring */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div className="col">
           <div className="card">
-            <h2>Manifest</h2>
+            <h2>
+              <span className="h-ico"><DocIcon /></span>
+              Manifest
+            </h2>
             <div className="body">
               <div className="row">
                 <div>
@@ -168,18 +194,15 @@ export default function Page() {
                     ))}
                   </select>
                 </div>
-                <div style={{ flex: "0 0 auto", display: "flex", alignItems: "center", gap: 6 }}>
-                  <label htmlFor="evalmode" style={{ margin: 0 }}>
-                    eval mode
-                  </label>
+                <label className="toggle" htmlFor="evalmode">
                   <input
                     id="evalmode"
                     type="checkbox"
                     checked={evalMode}
                     onChange={(e) => setEvalMode(e.target.checked)}
-                    style={{ width: 16, height: 16 }}
                   />
-                </div>
+                  eval mode
+                </label>
               </div>
 
               <label htmlFor="manifest">YAML</label>
@@ -191,46 +214,56 @@ export default function Page() {
                 spellCheck={false}
               />
 
-              <label htmlFor="input" style={{ marginTop: 12 }}>
-                Input
-              </label>
-              <input
-                id="input"
-                type="text"
-                data-testid="run-input"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-              />
+              <div style={{ marginTop: 12 }}>
+                <label htmlFor="input">Input</label>
+                <input
+                  id="input"
+                  type="text"
+                  data-testid="run-input"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                />
+              </div>
 
-              <div className="row" style={{ marginTop: 12, marginBottom: 0 }}>
+              <div className="row" style={{ marginTop: 14, marginBottom: 0 }}>
                 <button className="secondary" data-testid="validate-btn" onClick={onValidate}>
+                  <CheckIcon />
                   Validate
                 </button>
                 {running ? (
-                  <button data-testid="stop-btn" onClick={onStop}>
+                  <button className="danger" data-testid="stop-btn" onClick={onStop}>
+                    <StopIcon />
                     Stop
                   </button>
                 ) : (
                   <button data-testid="run-btn" onClick={onRun}>
+                    <PlayIcon />
                     Run agent
                   </button>
                 )}
               </div>
               {validity && (
-                <p style={{ marginBottom: 0, marginTop: 10 }}>
+                <div className="validity-line">
                   <span className={`pill ${validity.ok ? "ok" : "bad"}`} data-testid="validity">
                     {validity.ok ? "VALID" : "INVALID"}
-                  </span>{" "}
-                  <span className="muted">{validity.msg}</span>
-                </p>
+                  </span>
+                  <span className="msg">{validity.msg}</span>
+                </div>
               )}
             </div>
           </div>
 
           <div className="card">
-            <h2>Run history</h2>
+            <h2>
+              <span className="h-ico"><HistoryIcon /></span>
+              Run history
+            </h2>
             <div className="body hist" style={{ padding: 0 }} data-testid="run-history">
-              {runs.length === 0 && <p className="muted" style={{ padding: 14 }}>No runs yet.</p>}
+              {runs.length === 0 && (
+                <p className="empty" style={{ padding: 14 }}>
+                  No runs yet.
+                </p>
+              )}
               {runs.map((r) => (
                 <div className="hist-row" key={r.id}>
                   <span className={`pill ${r.status === "completed" ? "ok" : r.status === "error" ? "bad" : "warn"}`}>
@@ -246,21 +279,28 @@ export default function Page() {
         </div>
 
         {/* RIGHT: run output + trace + 3D replay */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div className="col">
           <div className="card">
             <h2>
-              Run output{" "}
-              <span
-                className={`pill ${status === "done" ? "ok" : status === "error" ? "bad" : status === "running" || status === "stopped" ? "warn" : ""}`}
-                data-testid="run-status"
-              >
-                {status}
+              <span className="h-ico"><OutputIcon /></span>
+              Run output
+              <span className="h-right">
+                {running && <span className="live-dot" aria-hidden="true" />}
+                <span
+                  className={`pill ${status === "done" ? "ok" : status === "error" ? "bad" : status === "running" || status === "stopped" ? "warn" : ""}`}
+                  data-testid="run-status"
+                >
+                  {status}
+                </span>
               </span>
             </h2>
             <div className="body">
               {answer !== null && (
                 <div className="answer" data-testid="answer">
-                  <div className="lbl">Answer</div>
+                  <div className="lbl">
+                    <CheckIcon />
+                    Answer
+                  </div>
                   {answer}
                 </div>
               )}
@@ -270,12 +310,13 @@ export default function Page() {
                 </p>
               )}
               {cost !== null && (
-                <p className="muted mono" style={{ marginBottom: 0 }} data-testid="cost">
-                  cost: ${cost.toFixed(6)}
+                <p className="cost" data-testid="cost">
+                  cost: <span className="num">${cost.toFixed(6)}</span>
                 </p>
               )}
               {answer === null && !runError && status === "idle" && (
-                <p className="muted" style={{ margin: 0 }}>
+                <p className="empty">
+                  <PlayIcon />
                   Author a manifest and click <b>Run agent</b> to stream the trace.
                 </p>
               )}
@@ -283,9 +324,16 @@ export default function Page() {
           </div>
 
           <div className="card">
-            <h2>Trace</h2>
+            <h2>
+              <span className="h-ico"><TraceIcon /></span>
+              Trace
+            </h2>
             <div className="body trace" data-testid="trace">
-              {events.length === 0 && <p className="muted" style={{ margin: 0 }}>No events yet.</p>}
+              {events.length === 0 && (
+                <p className="empty" style={{ margin: 0 }}>
+                  No events yet.
+                </p>
+              )}
               {events.map((ev, i) => (
                 <div className={`event ${ev.type}`} key={i} data-testid={`event-${ev.type}`}>
                   <div className="head">
@@ -301,7 +349,8 @@ export default function Page() {
                   {ev.detail && <div className="detail">{ev.detail}</div>}
                   {ev.tool_calls?.map((tc, j) => (
                     <div className="tc" key={j}>
-                      ⚙ {tc.name}({JSON.stringify(tc.args)})
+                      <ToolIcon />
+                      {tc.name}({JSON.stringify(tc.args)})
                     </div>
                   ))}
                 </div>
@@ -310,7 +359,10 @@ export default function Page() {
           </div>
 
           <div className="card">
-            <h2>3D execution graph</h2>
+            <h2>
+              <span className="h-ico"><GraphIcon /></span>
+              3D execution graph
+            </h2>
             <div className="body" style={{ padding: 0 }} data-testid="trace-3d">
               <TraceGraph3D events={events} />
             </div>
