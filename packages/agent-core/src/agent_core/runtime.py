@@ -19,7 +19,8 @@ import asyncio
 import contextvars
 import logging
 import operator
-from typing import Annotated, Any, TypedDict
+from concurrent.futures import ThreadPoolExecutor
+from typing import Annotated, Any, NamedTuple, TypedDict
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -32,6 +33,7 @@ from .checkpoint import materialize as materialize_checkpointer
 from .errors import AgentCoreError, UnknownReferenceError
 from .interfaces import (
     BaseTool,
+    MCPConnector,
     MemoryItem,
     MemoryProvider,
     Message,
@@ -438,6 +440,41 @@ class CompiledAgent:
         await self._persist(user_input, answer, eval_mode)
 
 
+class MCPServerBinding(NamedTuple):
+    """A ``registries.mcp`` entry: a connector paired with that server's config.
+
+    ``compile_agent`` auto-binds every ``mcp_servers`` name a manifest declares
+    by calling ``connector.discover(config)`` and adapting the result into the
+    agent's toolset (PRD Section 8.3 MCPConnector / Section 14.6 extension
+    conformance — "connect an MCP server via config, zero core edits"). Only
+    exercised when a manifest actually lists ``mcp_servers``: the default
+    (empty list) path never constructs or calls a connector, so every existing
+    manifest is unaffected.
+    """
+
+    connector: MCPConnector
+    config: dict[str, Any]
+
+
+def _run_sync(coro: Any) -> Any:
+    """Drive an async coroutine to completion from sync code.
+
+    ``MCPConnector.discover`` is async (it talks to a server process);
+    ``compile_agent`` stays a plain sync function so every existing call site
+    (tests, the eval harness, the API's ``/api/runs`` SSE generator) keeps
+    working unchanged. When no loop is running, ``asyncio.run`` is the direct
+    path; when one already is (the API calls ``compile_agent`` from inside its
+    own running event loop), ``asyncio.run`` cannot nest inside it, so the
+    coroutine is driven on a dedicated thread with its own fresh loop instead.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
 class _SubAgentArgs(BaseModel):
     input: str
 
@@ -505,6 +542,19 @@ def compile_agent(
     provider = registries.models.get(manifest.model.provider)
     system_prompt = registries.prompts.get(manifest.prompt_ref)
     tools = {name: registries.tools.get(name) for name in manifest.tools}
+
+    # MCP auto-binding (additive): a manifest with no `mcp_servers` (the
+    # default for every pre-existing manifest) never touches this loop, so
+    # behavior is unchanged unless a manifest opts in.
+    for server_name in manifest.mcp_servers:
+        binding = registries.mcp.get(server_name)
+        for mcp_tool in _run_sync(binding.connector.discover(binding.config)):
+            if mcp_tool.name in tools:
+                raise AgentCoreError(
+                    f"mcp tool '{mcp_tool.name}' from server '{server_name}' "
+                    f"collides with an existing tool"
+                )
+            tools[mcp_tool.name] = mcp_tool
 
     for sub_id in manifest.sub_agents:
         if not agents or sub_id not in agents:

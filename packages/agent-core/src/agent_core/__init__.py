@@ -75,7 +75,14 @@ from .observability import (
     usage_totals,
 )
 from .registry import Registries, Registry
-from .runtime import CompiledAgent, RunResult, SubAgentTool, TraceEvent, compile_agent
+from .runtime import (
+    CompiledAgent,
+    MCPServerBinding,
+    RunResult,
+    SubAgentTool,
+    TraceEvent,
+    compile_agent,
+)
 from .sandbox.docker_executor import DockerCodeExecutor
 from .schema import (
     AgentManifest,
@@ -131,6 +138,7 @@ __all__ = [
     "SubAgentTool",
     "RunResult",
     "TraceEvent",
+    "MCPServerBinding",
     # built-ins
     "EchoTool",
     "EchoArgs",
