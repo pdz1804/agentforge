@@ -41,7 +41,7 @@
   --bad-line: rgba(242, 105, 106, 0.34);
 
   /* ---- Type ---- */
-  --font-sans: var(--font-sans, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  --font-sans: var(--font-inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
   --mono: var(--font-mono, ui-monospace, "SFMono-Regular", "JetBrains Mono", Consolas, monospace);
 
   /* ---- Radius + elevation scale (one consistent scale) ---- */
@@ -94,7 +94,8 @@ a:hover { text-decoration: underline; }
 .topbar {
   display: flex;
   align-items: center;
-  gap: 14px;
+  flex-wrap: wrap;
+  gap: 10px 14px;
   padding: 12px 22px;
   border-bottom: 1px solid var(--line);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent), var(--panel);
@@ -135,6 +136,10 @@ a:hover { text-decoration: underline; }
   letter-spacing: 0.02em;
   padding-left: 9px;
   border-left: 1px solid var(--line-strong);
+}
+@media (max-width: 560px) {
+  .brand-sub { display: none; }
+  .topbar .meta { display: none; }
 }
 
 .status-chip {
@@ -519,7 +524,7 @@ button.secondary:disabled:hover { background: var(--panel-2); }
 
 .event .head { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; }
 .event .step {
-  color: var(--faint);
+  color: var(--muted);
   font-size: 11px;
   padding: 1px 6px;
   border: 1px solid var(--line);
