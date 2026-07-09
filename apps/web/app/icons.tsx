@@ -119,3 +119,76 @@ export function ToolIcon(props: IconProps) {
     </svg>
   );
 }
+
+// ---- Theme-toggle icons ----
+export function SunIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+    </svg>
+  );
+}
+
+export function MoonIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" />
+    </svg>
+  );
+}
+
+export function MonitorIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <rect x="2" y="4" width="20" height="13" rx="2" />
+      <path d="M8 21h8M12 17v4" />
+    </svg>
+  );
+}
+
+// ---- About-page feature icons ----
+export function LayersIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="m12 2 9 5-9 5-9-5 9-5Z" />
+      <path d="m3 12 9 5 9-5M3 17l9 5 9-5" />
+    </svg>
+  );
+}
+
+export function PlugIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M9 2v6M15 2v6" />
+      <path d="M6 8h12v3a6 6 0 0 1-12 0V8Z" />
+      <path d="M12 17v5" />
+    </svg>
+  );
+}
+
+export function CubeIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M12 2 3 7v10l9 5 9-5V7l-9-5Z" />
+      <path d="m3 7 9 5 9-5M12 12v10" />
+    </svg>
+  );
+}
+
+export function BoltIcon(props: IconProps) {
+  return (
+    <svg {...base({ fill: "none", ...props })}>
+      <path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z" />
+    </svg>
+  );
+}
+
+export function CoinIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M14.5 9a2.5 2.5 0 0 0-2.5-1.5c-1.4 0-2.5.8-2.5 2s1.1 1.7 2.5 2 2.5.8 2.5 2-1.1 2-2.5 2A2.5 2.5 0 0 1 9.5 16M12 6v1.5M12 16.5V18" />
+    </svg>
+  );
+}

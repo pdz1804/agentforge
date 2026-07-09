@@ -13,11 +13,14 @@ import {
 } from "@/lib/api";
 import { TEMPLATES } from "@/lib/templates";
 import TraceGraph3D from "./TraceGraph3D";
+import ThemeToggle from "./ThemeToggle";
+import AboutPanel from "./AboutPanel";
 import {
   CheckIcon,
   DocIcon,
   GraphIcon,
   HistoryIcon,
+  LayersIcon,
   LogoMark,
   OutputIcon,
   PlayIcon,
@@ -25,6 +28,8 @@ import {
   ToolIcon,
   TraceIcon,
 } from "./icons";
+
+type Tab = "builder" | "about";
 
 export default function Page() {
   const [health, setHealth] = useState<Health | null>(null);
@@ -39,7 +44,24 @@ export default function Page() {
   const [runError, setRunError] = useState<string | null>(null);
   const [cost, setCost] = useState<number | null>(null);
   const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [tab, setTab] = useState<Tab>("builder");
   const abortRef = useRef<AbortController | null>(null);
+
+  // Roving-focus keyboard support for the tablist (Left/Right/Home/End).
+  function onTabKey(e: React.KeyboardEvent) {
+    const order: Tab[] = ["builder", "about"];
+    const i = order.indexOf(tab);
+    let next: Tab | null = null;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") next = order[(i + 1) % order.length];
+    else if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = order[(i - 1 + order.length) % order.length];
+    else if (e.key === "Home") next = order[0];
+    else if (e.key === "End") next = order[order.length - 1];
+    if (next) {
+      e.preventDefault();
+      setTab(next);
+      document.getElementById(`tab-${next}`)?.focus();
+    }
+  }
 
   const refreshRuns = useCallback(() => {
     listRuns(20).then(setRuns).catch(() => {});
@@ -167,8 +189,55 @@ export default function Page() {
             ? `core ${health.core_version} · models: ${health.models.join(", ")} · tools: ${health.tools.length}`
             : "backend offline · core —"}
         </span>
+        <ThemeToggle />
       </div>
 
+      <div className="tabbar" role="tablist" aria-label="Primary" onKeyDown={onTabKey}>
+        <button
+          type="button"
+          role="tab"
+          id="tab-builder"
+          className="tab"
+          data-testid="tab-builder"
+          aria-selected={tab === "builder"}
+          aria-controls="panel-builder"
+          tabIndex={tab === "builder" ? 0 : -1}
+          onClick={() => setTab("builder")}
+        >
+          <LayersIcon />
+          Builder
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-about"
+          className="tab"
+          data-testid="tab-about"
+          aria-selected={tab === "about"}
+          aria-controls="panel-about"
+          tabIndex={tab === "about" ? 0 : -1}
+          onClick={() => setTab("about")}
+        >
+          <DocIcon />
+          About
+        </button>
+      </div>
+
+      <div
+        id="panel-about"
+        role="tabpanel"
+        aria-labelledby="tab-about"
+        hidden={tab !== "about"}
+      >
+        {tab === "about" && <AboutPanel />}
+      </div>
+
+      <div
+        id="panel-builder"
+        role="tabpanel"
+        aria-labelledby="tab-builder"
+        hidden={tab !== "builder"}
+      >
       <div className="layout">
         {/* LEFT: authoring */}
         <div className="col">
@@ -368,6 +437,7 @@ export default function Page() {
             </div>
           </div>
         </div>
+      </div>
       </div>
     </>
   );
