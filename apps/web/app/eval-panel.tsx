@@ -1,0 +1,354 @@
+"use client";
+
+// Eval report view (PRD Phase 9). Runs the eval harness on the manifest the
+// Builder tab currently holds and renders the dev vs held-out report side by
+// side. Additive UI only — it reuses the shared design tokens/classes.
+
+import { useEffect, useMemo, useState } from "react";
+import yaml from "js-yaml";
+import {
+  listSuites,
+  runEval,
+  type EvalSuite,
+  type EvalResponse,
+  type RegressionVerdict,
+  type SplitReport,
+} from "@/lib/api";
+import {
+  CheckIcon,
+  CoinIcon,
+  FlaskIcon,
+  GaugeIcon,
+  PlayIcon,
+  SpinnerIcon,
+  TargetIcon,
+} from "./icons";
+
+// A suite is "offline" (free to run) when it grades against the echo agent —
+// no LLM provider is billed. Everything else is flagged as live ($).
+function isOffline(s: EvalSuite): boolean {
+  return `${s.suite_id} ${s.manifest_id}`.toLowerCase().includes("echo");
+}
+
+function pct(n?: number): string {
+  if (n == null || Number.isNaN(n)) return "—";
+  // pass_rate arrives as a 0..1 fraction; tolerate an already-percent value.
+  const v = n <= 1 ? n * 100 : n;
+  return `${Math.round(v)}%`;
+}
+
+function num(n?: number): string {
+  if (n == null || Number.isNaN(n)) return "—";
+  return n.toFixed(3);
+}
+
+// Prefer server-provided stats; fall back to deriving them from task_scores so
+// the summary is never blank when a split still carries per-task results.
+function splitStats(s: SplitReport) {
+  const tasks = s.task_scores ?? [];
+  const total = tasks.length;
+  const passed = tasks.filter((t) => t.passed).length;
+  const passRate = s.pass_rate != null ? s.pass_rate : total ? passed / total : undefined;
+  const mean =
+    s.mean_score != null
+      ? s.mean_score
+      : total
+        ? tasks.reduce((a, t) => a + (Number(t.score) || 0), 0) / total
+        : undefined;
+  return { total, passed, passRate, mean };
+}
+
+function prettySplit(split: string): string {
+  return split.replace(/_/g, "-");
+}
+
+function SplitCard({ report, held }: { report: SplitReport; held: boolean }) {
+  const st = splitStats(report);
+  const tasks = report.task_scores ?? [];
+  return (
+    <div className="eval-split" data-testid={`eval-split-${report.split}`}>
+      <div className="eval-split-head">
+        <span className="es-ico">{held ? <TargetIcon /> : <FlaskIcon />}</span>
+        <div className="es-title">
+          <span className="es-name">{prettySplit(report.split)}</span>
+          <span className="es-sub">{held ? "generalization" : "iteration"}</span>
+        </div>
+        <span className="es-count">{st.total} tasks</span>
+      </div>
+
+      <div className="eval-metrics">
+        <div className="metric">
+          <span className="m-val">{pct(st.passRate)}</span>
+          <span className="m-lbl">Pass rate</span>
+        </div>
+        <div className="metric">
+          <span className="m-val">{num(st.mean)}</span>
+          <span className="m-lbl">Mean score</span>
+        </div>
+        <div className="metric">
+          <span className="m-val">
+            {st.passed}
+            <span className="m-of">/{st.total}</span>
+          </span>
+          <span className="m-lbl">Passed</span>
+        </div>
+      </div>
+
+      <div className="eval-tasks" role="table" aria-label={`${report.split} tasks`}>
+        <div className="et-row et-head" role="row">
+          <span role="columnheader">Task</span>
+          <span role="columnheader">Score</span>
+          <span role="columnheader">Result</span>
+        </div>
+        {tasks.length === 0 && <p className="empty et-empty">No task scores.</p>}
+        {tasks.map((t) => (
+          <div className="et-row" role="row" key={t.task_id}>
+            <span className="et-id" role="cell" title={t.task_id}>
+              {t.task_id}
+            </span>
+            <span className="et-score" role="cell">
+              {num(Number(t.score))}
+            </span>
+            <span role="cell">
+              <span className={`pill ${t.passed ? "ok" : "bad"}`}>{t.passed ? "PASS" : "FAIL"}</span>
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RegressionBanner({ reg }: { reg: RegressionVerdict }) {
+  // Derive a headline verdict defensively from whatever boolean the backend set.
+  const verdict =
+    reg.passed ?? reg.ok ?? (reg.regressed != null ? !reg.regressed : undefined);
+  const entries = Object.entries(reg).filter(
+    ([, v]) => typeof v === "string" || typeof v === "number" || typeof v === "boolean",
+  );
+  return (
+    <div
+      className={`eval-regression ${verdict === false ? "bad" : verdict === true ? "ok" : ""}`}
+      data-testid="eval-regression"
+    >
+      <div className="er-head">
+        <GaugeIcon />
+        <span className="er-title">Regression vs baseline</span>
+        {verdict != null && (
+          <span className={`pill ${verdict ? "ok" : "bad"}`}>
+            {verdict ? "NO REGRESSION" : "REGRESSION"}
+          </span>
+        )}
+      </div>
+      {entries.length > 0 && (
+        <div className="er-facts">
+          {entries.map(([k, v]) => (
+            <span className="er-fact" key={k}>
+              <span className="erf-k">{k.replace(/_/g, " ")}</span>
+              <span className="erf-v">{String(v)}</span>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function EvalPanel({ manifestYaml }: { manifestYaml: string }) {
+  const [suites, setSuites] = useState<EvalSuite[] | null>(null);
+  const [suitesError, setSuitesError] = useState<string | null>(null);
+  const [suiteId, setSuiteId] = useState<string>("");
+  const [status, setStatus] = useState<"idle" | "running" | "done" | "error">("idle");
+  const [result, setResult] = useState<EvalResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Parsed manifest id for display — evals always run against the CURRENT
+  // Builder manifest, so surface which one and any YAML problem up front.
+  const parsed = useMemo(() => {
+    try {
+      const m = yaml.load(manifestYaml) as { id?: string } | null;
+      return { manifest: m, id: (m && m.id) || null, error: null as string | null };
+    } catch (e) {
+      return { manifest: null, id: null, error: (e as Error).message };
+    }
+  }, [manifestYaml]);
+
+  useEffect(() => {
+    let alive = true;
+    listSuites()
+      .then((s) => {
+        if (!alive) return;
+        setSuites(s);
+        // Default to an offline (free) suite so a click never bills by surprise.
+        const preferred = s.find(isOffline) ?? s[0];
+        if (preferred) setSuiteId(preferred.suite_id);
+      })
+      .catch((e) => alive && setSuitesError((e as Error).message));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const selected = suites?.find((s) => s.suite_id === suiteId) ?? null;
+  const live = selected ? !isOffline(selected) : false;
+
+  async function onRun() {
+    if (parsed.error) {
+      setError(`YAML parse error: ${parsed.error}`);
+      setStatus("error");
+      return;
+    }
+    if (!suiteId) return;
+    setStatus("running");
+    setError(null);
+    setResult(null);
+    try {
+      const res = await runEval({ manifest: parsed.manifest, suite_id: suiteId });
+      setResult(res);
+      setStatus("done");
+    } catch (e) {
+      setError((e as Error).message);
+      setStatus("error");
+    }
+  }
+
+  const running = status === "running";
+
+  return (
+    <div className="eval" data-testid="eval-panel">
+      <div className="eval-wrap">
+        {/* ---- Controls ---- */}
+        <div className="card">
+          <h2>
+            <span className="h-ico">
+              <GaugeIcon />
+            </span>
+            Eval harness
+          </h2>
+          <div className="body">
+            <p className="eval-lede">
+              Grade the <b>current Builder manifest</b> against a suite and compare the{" "}
+              <b>dev</b> split (iterate) with the <b>held-out</b> split (generalization).
+            </p>
+
+            <div className="eval-controls">
+              <div className="eval-suite-field">
+                <label htmlFor="eval-suite">Suite</label>
+                {suitesError ? (
+                  <p className="err" style={{ margin: 0 }} data-testid="eval-suites-error">
+                    Could not load suites: {suitesError}
+                  </p>
+                ) : suites === null ? (
+                  <p className="empty" style={{ margin: 0 }}>
+                    <SpinnerIcon className="spin" />
+                    Loading suites…
+                  </p>
+                ) : suites.length === 0 ? (
+                  <p className="empty" style={{ margin: 0 }}>
+                    No eval suites registered.
+                  </p>
+                ) : (
+                  <select
+                    id="eval-suite"
+                    data-testid="eval-suite-select"
+                    value={suiteId}
+                    onChange={(e) => setSuiteId(e.target.value)}
+                    disabled={running}
+                  >
+                    {suites.map((s) => (
+                      <option key={s.suite_id} value={s.suite_id}>
+                        {s.suite_id} · {s.dev_task_count}+{s.held_out_task_count} tasks
+                        {isOffline(s) ? "  (offline)" : "  (live $)"}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              <button
+                data-testid="eval-run"
+                onClick={onRun}
+                disabled={running || !suiteId || suites === null || suites?.length === 0}
+              >
+                {running ? <SpinnerIcon className="spin" /> : <PlayIcon />}
+                {running ? "Running…" : "Run eval"}
+              </button>
+            </div>
+
+            <div className="eval-meta">
+              <span className="pill info" title="Evals run against the manifest in the Builder tab">
+                {parsed.id ? `manifest: ${parsed.id}` : "manifest: (unnamed)"}
+              </span>
+              {selected && (
+                <span className={`pill ${live ? "warn" : "ok"}`} data-testid="eval-cost-badge">
+                  {live ? "LIVE · COSTS LLM $" : "OFFLINE · FREE"}
+                </span>
+              )}
+            </div>
+
+            {parsed.error && (
+              <p className="err" data-testid="eval-yaml-error">
+                YAML parse error: {parsed.error}
+              </p>
+            )}
+            {live && (
+              <p className="eval-warn">
+                <CoinIcon />
+                This suite grades with a paid model. Each run bills your provider — the offline{" "}
+                <b>echo_agent</b> suite is free.
+              </p>
+            )}
+          </div>
+        </div>
+
+        {/* ---- Report ---- */}
+        <div className="card">
+          <h2>
+            <span className="h-ico">
+              <CheckIcon />
+            </span>
+            Report
+            <span className="h-right">
+              <span
+                className={`pill ${
+                  status === "done" ? "ok" : status === "error" ? "bad" : status === "running" ? "warn" : ""
+                }`}
+                data-testid="eval-status"
+              >
+                {status}
+              </span>
+            </span>
+          </h2>
+          <div className="body" data-testid="eval-report">
+            {status === "idle" && (
+              <p className="empty">
+                <GaugeIcon />
+                Pick a suite and click <b>&nbsp;Run eval&nbsp;</b> to score dev vs held-out.
+              </p>
+            )}
+            {status === "running" && (
+              <p className="empty" data-testid="eval-loading">
+                <SpinnerIcon className="spin" />
+                Scoring suite — dev then held-out…
+              </p>
+            )}
+            {status === "error" && (
+              <p className="err" data-testid="eval-error">
+                {error}
+              </p>
+            )}
+            {status === "done" && result && (
+              <>
+                {result.regression && <RegressionBanner reg={result.regression} />}
+                <div className="eval-splits">
+                  <SplitCard report={result.report.dev} held={false} />
+                  <SplitCard report={result.report.held_out} held />
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

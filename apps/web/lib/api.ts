@@ -46,6 +46,81 @@ export async function validateManifest(
   return r.json();
 }
 
+// ---- Eval harness (dev vs held-out suites) ----
+
+export type EvalSuite = {
+  suite_id: string;
+  manifest_id: string;
+  dev_task_count: number;
+  held_out_task_count: number;
+};
+
+export type TaskScore = {
+  task_id: string;
+  score: number;
+  passed: boolean;
+  detail?: string;
+  [k: string]: unknown;
+};
+
+export type SplitReport = {
+  suite_id: string;
+  manifest_id: string;
+  split: string;
+  task_scores: TaskScore[];
+  pass_rate?: number;
+  mean_score?: number;
+};
+
+export type DevHeldOutReport = {
+  dev: SplitReport;
+  held_out: SplitReport;
+};
+
+// Regression shape varies by backend config; keep it open and render defensively.
+export type RegressionVerdict = {
+  passed?: boolean;
+  ok?: boolean;
+  regressed?: boolean;
+  [k: string]: unknown;
+};
+
+export type EvalResponse = {
+  report: DevHeldOutReport;
+  regression?: RegressionVerdict | null;
+};
+
+export async function listSuites(): Promise<EvalSuite[]> {
+  const r = await fetch("/api/suites", { cache: "no-store" });
+  if (!r.ok) throw new Error(`suites ${r.status}`);
+  const j = await r.json();
+  return j.suites ?? [];
+}
+
+export async function runEval(body: {
+  manifest: unknown;
+  suite_id: string;
+  agents?: unknown[];
+}): Promise<EvalResponse> {
+  const r = await fetch("/api/eval", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    // Surface FastAPI's {detail} when present, else the status code.
+    let msg = `eval failed: ${r.status}`;
+    try {
+      const j = await r.json();
+      if (j?.detail) msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
 export async function listRuns(limit = 20): Promise<RunSummary[]> {
   const r = await fetch(`/api/runs?limit=${limit}`, { cache: "no-store" });
   if (!r.ok) return [];

@@ -129,6 +129,37 @@ export function ToolIcon(props: IconProps) {
   );
 }
 
+// Gauge / metrics — the Eval tab + report headers.
+export function GaugeIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M12 14a7 7 0 0 1 7-7M12 14a7 7 0 0 0-7-7M12 14l3.5-3.5" />
+      <path d="M5 20a9 9 0 1 1 14 0" />
+    </svg>
+  );
+}
+
+// Concentric target — marks the held-out (generalization) split.
+export function TargetIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="12" r="5" />
+      <circle cx="12" cy="12" r="1.4" />
+    </svg>
+  );
+}
+
+// Flask — marks the dev (iteration) split.
+export function FlaskIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M9 3h6M10 3v6l-5 9a1.5 1.5 0 0 0 1.3 2.3h11.4A1.5 1.5 0 0 0 20 18l-5-9V3" />
+      <path d="M7.5 15h9" />
+    </svg>
+  );
+}
+
 // ---- Theme-toggle icons ----
 export function SunIcon(props: IconProps) {
   return (

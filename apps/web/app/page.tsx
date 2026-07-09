@@ -15,9 +15,11 @@ import { TEMPLATES } from "@/lib/templates";
 import TraceGraph3D from "./TraceGraph3D";
 import ThemeToggle from "./ThemeToggle";
 import AboutPanel from "./AboutPanel";
+import EvalPanel from "./eval-panel";
 import {
   CheckIcon,
   DocIcon,
+  GaugeIcon,
   GraphIcon,
   HistoryIcon,
   LayersIcon,
@@ -29,7 +31,7 @@ import {
   TraceIcon,
 } from "./icons";
 
-type Tab = "builder" | "about";
+type Tab = "builder" | "eval" | "about";
 
 export default function Page() {
   const [health, setHealth] = useState<Health | null>(null);
@@ -49,7 +51,7 @@ export default function Page() {
 
   // Roving-focus keyboard support for the tablist (Left/Right/Home/End).
   function onTabKey(e: React.KeyboardEvent) {
-    const order: Tab[] = ["builder", "about"];
+    const order: Tab[] = ["builder", "eval", "about"];
     const i = order.indexOf(tab);
     let next: Tab | null = null;
     if (e.key === "ArrowRight" || e.key === "ArrowDown") next = order[(i + 1) % order.length];
@@ -210,6 +212,20 @@ export default function Page() {
         <button
           type="button"
           role="tab"
+          id="tab-eval"
+          className="tab"
+          data-testid="tab-eval"
+          aria-selected={tab === "eval"}
+          aria-controls="panel-eval"
+          tabIndex={tab === "eval" ? 0 : -1}
+          onClick={() => setTab("eval")}
+        >
+          <GaugeIcon />
+          Eval
+        </button>
+        <button
+          type="button"
+          role="tab"
           id="tab-about"
           className="tab"
           data-testid="tab-about"
@@ -221,6 +237,15 @@ export default function Page() {
           <DocIcon />
           About
         </button>
+      </div>
+
+      <div
+        id="panel-eval"
+        role="tabpanel"
+        aria-labelledby="tab-eval"
+        hidden={tab !== "eval"}
+      >
+        {tab === "eval" && <EvalPanel manifestYaml={manifestYaml} />}
       </div>
 
       <div
