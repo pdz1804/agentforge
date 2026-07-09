@@ -1,0 +1,26 @@
+# Dev split for the offline "echo_agent" manifest (model.provider="echo",
+# prompt_ref="prompts/echo_agent.md", no tools). The echo model always answers
+# with the last user message verbatim, so these tasks are fully deterministic
+# and require no API key. Iterate on this split freely (PRD Section 14.1).
+id: echo_agent.dev
+manifest_id: echo_agent
+split: dev
+tasks:
+  - id: dev-1
+    input: "hello harness"
+    scoring_mode: programmatic
+    match_type: exact
+    expected: "hello harness"
+
+  - id: dev-2
+    input: "please mention orchids and daisies"
+    scoring_mode: rubric
+    rubric:
+      - "orchids"
+      - "daisies"
+
+  - id: dev-3
+    input: "return code ECHO-42 please"
+    scoring_mode: programmatic
+    match_type: regex
+    expected: "ECHO-\\d+"

@@ -1,0 +1,17 @@
+# Optional live-model sample suite for the "assistant_openai" manifest
+# (model.provider="openai", prompt_ref="prompts/assistant.md"). Demonstrates
+# llm_judge scoring; NOT exercised by the automated test suite because
+# running it needs OPENAI_API_KEY and makes a real network call to the judge
+# model. Run manually via POST /api/eval with suite_id="assistant_openai" once
+# a key is configured.
+id: assistant_openai.dev
+manifest_id: assistant_openai
+split: dev
+tasks:
+  - id: dev-1
+    input: "In one short sentence, what is photosynthesis?"
+    scoring_mode: llm_judge
+    rubric:
+      - "mentions that plants convert light/sunlight into energy"
+      - "is a single concise sentence"
+    pass_threshold: 0.6

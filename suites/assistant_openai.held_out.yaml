@@ -1,0 +1,13 @@
+# Held-out split for "assistant_openai" (see assistant_openai.dev.yaml). Task
+# id + input are disjoint from the dev split.
+id: assistant_openai.held_out
+manifest_id: assistant_openai
+split: held_out
+tasks:
+  - id: held-1
+    input: "In one short sentence, why is the sky blue?"
+    scoring_mode: llm_judge
+    rubric:
+      - "mentions light scattering (Rayleigh scattering) as the cause"
+      - "is a single concise sentence"
+    pass_threshold: 0.6

@@ -9,11 +9,13 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 import json
+import os
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import HTTPException
 
@@ -33,12 +35,35 @@ from agent_core import (
     usage_totals,
 )
 from agent_core.errors import AgentCoreError
+from agent_core.eval import (
+    DevHeldOutReport,
+    EvalReport,
+    JudgeFn,
+    SuitePair,
+    check_disjoint,
+    check_regression,
+    discover_suite_pairs,
+    evaluate_pair,
+    load_suite_dict,
+    make_model_judge_fn,
+)
 
 app = FastAPI(title="AgentForge API", version=core_version)
 
 # Built once at startup; later phases will make these per-user / DB-backed.
 registries = build_default_registries()
 run_store = InMemoryRunStore()
+
+# Repo-root suites/ directory: apps/api/app/main.py -> app -> api -> apps -> root.
+# Overridable via env for deployments where the repo layout differs.
+_DEFAULT_SUITES_DIR = Path(__file__).resolve().parents[3] / "suites"
+SUITES_DIR = Path(os.environ.get("AGENTFORGE_SUITES_DIR") or _DEFAULT_SUITES_DIR)
+
+# Fixed judge model + temperature=0 (PRD Section 14.2). Constructing this wrapper
+# makes no network call; only an actual llm_judge task invocation does, and only
+# if OPENAI_API_KEY is configured. Tests never exercise this path — they inject
+# a fake JudgeFn directly against agent_core.eval's scoring functions.
+eval_judge_fn: JudgeFn = make_model_judge_fn(registries.models.get("openai"), model="gpt-4o-mini")
 
 
 @app.get("/health")
@@ -336,3 +361,112 @@ async def index_document(req: IndexRequest) -> dict:
     except AgentCoreError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "doc_id": req.doc_id}
+
+
+# --------------------------------------------------------------------------- #
+# Agent evaluation harness (Phase 9, PRD Section 14) — dev/held-out eval runs.
+# --------------------------------------------------------------------------- #
+@app.get("/api/suites")
+def list_suites() -> dict:
+    """List available dev/held-out suite pairs discovered under ``suites/``."""
+    try:
+        pairs = discover_suite_pairs(SUITES_DIR)
+    except AgentCoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {
+        "suites": [
+            {
+                "suite_id": pair.group_id,
+                "manifest_id": pair.manifest_id,
+                "dev_task_count": len(pair.dev.tasks),
+                "held_out_task_count": len(pair.held_out.tasks),
+            }
+            for pair in pairs.values()
+        ]
+    }
+
+
+class EvalRequest(BaseModel):
+    manifest: dict
+    agents: list[dict] = []  # sub-agent manifests, same shape as RunRequest
+    suite_id: str | None = None  # resolve dev+held_out pair from suites/
+    dev_suite: dict | None = None  # or: provide both splits inline
+    held_out_suite: dict | None = None
+    measure_flake: bool = True  # re-run each task once to detect nondeterminism
+    # Optional regression gate: a previously stored held-out (+ dev) EvalReport
+    # to compare this run against (PRD Section 14.3 / Epic H5).
+    baseline_held_out: dict | None = None
+    baseline_dev: dict | None = None
+    regression_tolerance: float = 0.05
+
+    @model_validator(mode="after")
+    def _check_suite_source(self) -> "EvalRequest":
+        has_id = self.suite_id is not None
+        has_inline = self.dev_suite is not None and self.held_out_suite is not None
+        if has_id == has_inline:  # both or neither supplied
+            raise ValueError(
+                "provide exactly one of 'suite_id' or both 'dev_suite' + 'held_out_suite'"
+            )
+        return self
+
+
+@app.post("/api/eval")
+async def run_eval(req: EvalRequest) -> dict:
+    """Run a manifest's dev + held-out suites and return the side-by-side report.
+
+    Reuses the same compile/resolve path as ``/api/runs``; each task runs in
+    deterministic eval mode (temp=0, memory-isolated). If ``baseline_held_out``
+    is supplied, the response also includes a regression-gate verdict.
+    """
+    try:
+        manifest = load_manifest_dict(req.manifest)
+        sub_agents = {}
+        for raw in req.agents:
+            sub = load_manifest_dict(raw)
+            sub_agents[sub.id] = sub
+        known = set(sub_agents)
+        resolve_manifest(manifest, registries, known_agents=known)
+        for sub in sub_agents.values():
+            resolve_manifest(sub, registries, known_agents=known)
+
+        if req.suite_id is not None:
+            pairs = discover_suite_pairs(SUITES_DIR)
+            if req.suite_id not in pairs:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"unknown suite_id '{req.suite_id}'. available: {sorted(pairs)}",
+                )
+            pair = pairs[req.suite_id]
+        else:
+            dev = load_suite_dict(req.dev_suite)
+            held_out = load_suite_dict(req.held_out_suite)
+            check_disjoint(dev, held_out)
+            pair = SuitePair(
+                group_id=dev.id, manifest_id=dev.manifest_id, dev=dev, held_out=held_out
+            )
+
+        report: DevHeldOutReport = await evaluate_pair(
+            manifest,
+            registries,
+            pair,
+            agents=sub_agents,
+            judge_fn=eval_judge_fn,
+            measure_flake=req.measure_flake,
+        )
+    except AgentCoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    body: dict = {"report": report.model_dump()}
+    if req.baseline_held_out is not None:
+        baseline_held_out = EvalReport.model_validate(req.baseline_held_out)
+        baseline_dev = (
+            EvalReport.model_validate(req.baseline_dev) if req.baseline_dev is not None else None
+        )
+        regression = check_regression(
+            report,
+            baseline_held_out,
+            baseline_dev=baseline_dev,
+            tolerance=req.regression_tolerance,
+        )
+        body["regression"] = regression.model_dump()
+    return body

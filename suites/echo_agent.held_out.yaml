@@ -1,0 +1,25 @@
+# Held-out split for "echo_agent" — used only to report quality, never
+# inspected while iterating prompts/manifests (PRD Section 14.1). Task ids and
+# inputs are disjoint from echo_agent.dev.yaml (enforced by check_disjoint).
+id: echo_agent.held_out
+manifest_id: echo_agent
+split: held_out
+tasks:
+  - id: held-1
+    input: "distinct held out phrase alpha"
+    scoring_mode: programmatic
+    match_type: exact
+    expected: "distinct held out phrase alpha"
+
+  - id: held-2
+    input: "talk about tulips and ferns today"
+    scoring_mode: rubric
+    rubric:
+      - "tulips"
+      - "ferns"
+
+  - id: held-3
+    input: "ship batch code BATCH-99 now"
+    scoring_mode: programmatic
+    match_type: regex
+    expected: "BATCH-\\d+"
