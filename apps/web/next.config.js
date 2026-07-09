@@ -6,6 +6,11 @@ const API_BASE = process.env.AGENTFORGE_API_BASE || "http://127.0.0.1:8077";
 
 const nextConfig = {
   reactStrictMode: true,
+  // SSE (POST /api/runs) must stream to the browser event-by-event. Next.js
+  // gzip-compresses responses by default, which BUFFERS the whole event-stream
+  // and delivers it only at completion. Disabling Next's compression lets the
+  // trace render live (a CDN/edge proxy should own compression in production).
+  compress: false,
   async rewrites() {
     return [
       { source: "/api/:path*", destination: `${API_BASE}/api/:path*` },

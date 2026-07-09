@@ -183,7 +183,16 @@ async def run_agent(req: RunRequest) -> StreamingResponse:
             # (GeneratorExit) — awaiting is allowed here, only yielding is not.
             await persist()
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            # Defense-in-depth against proxy buffering of the live stream.
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 # NOTE: the run history endpoints are unauthenticated and return raw inputs +
