@@ -704,6 +704,81 @@ button.secondary:disabled:hover { background: var(--panel-2); }
 [data-testid="trace-3d"] { position: relative; }
 [data-testid="trace-3d"] canvas { display: block; }
 
+/* Timeline scrubber — replays the run step-by-step (read-only from the trace). */
+.trace-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--line-soft);
+}
+.trace-timeline .tl-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.trace-timeline .tl-play {
+  width: 26px;
+  height: 26px;
+}
+.trace-timeline .tl-play:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.trace-timeline .tl-step {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+.trace-timeline .tl-node {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40%;
+}
+.trace-timeline .tl-count {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--faint);
+}
+.trace-timeline .tl-live {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--warn);
+}
+.trace-timeline .tl-live::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+  animation: pulse 1.2s var(--ease) infinite;
+}
+.trace-timeline input[type="range"].tl-range {
+  width: 100%;
+  height: 20px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--primary);
+  background: transparent;
+}
+.trace-timeline input[type="range"].tl-range:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+  border-radius: var(--r-pill);
+}
+
 /* =====================================================================
    Utilities + animation
    ===================================================================== */

@@ -433,7 +433,7 @@ export default function Page() {
               3D execution graph
             </h2>
             <div className="body" style={{ padding: 0 }} data-testid="trace-3d">
-              <TraceGraph3D events={events} />
+              <TraceGraph3D events={events} status={status} />
             </div>
           </div>
         </div>
