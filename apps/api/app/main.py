@@ -7,6 +7,9 @@ end to end.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
@@ -22,7 +25,6 @@ from fastapi import HTTPException
 from agent_core import (
     __version__ as core_version,
     DockerCodeExecutor,
-    InMemoryRunStore,
     MemoryItem,
     RunContext,
     RunRecord,
@@ -31,6 +33,7 @@ from agent_core import (
     compile_agent,
     load_manifest_dict,
     resolve_manifest,
+    select_run_store,
     token_cost,
     usage_totals,
 )
@@ -48,11 +51,25 @@ from agent_core.eval import (
     make_model_judge_fn,
 )
 
-app = FastAPI(title="AgentForge API", version=core_version)
+@asynccontextmanager
+async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
+    yield
+    # Shutdown: InMemoryRunStore (the default) has no `close`; only
+    # PostgresRunStore's connection pool needs releasing, so this is a no-op
+    # unless a caller opted into Phase 8's durable store.
+    close = getattr(run_store, "close", None)
+    if close is not None:
+        await close()
 
-# Built once at startup; later phases will make these per-user / DB-backed.
+
+app = FastAPI(title="AgentForge API", version=core_version, lifespan=_lifespan)
+
+# Built once at startup; later phases will make registries per-user / DB-backed.
 registries = build_default_registries()
-run_store = InMemoryRunStore()
+# Phase 8: opt-in durable run store. Defaults to InMemoryRunStore unless
+# DATABASE_URL (or AGENTFORGE_RUN_STORE=postgres) is set and Postgres answers
+# at startup — a misconfigured/unreachable DB falls back rather than crashing.
+run_store = select_run_store()
 
 # Repo-root suites/ directory: apps/api/app/main.py -> app -> api -> apps -> root.
 # Overridable via env for deployments where the repo layout differs.

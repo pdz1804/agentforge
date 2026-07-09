@@ -191,4 +191,29 @@ __all__ = [
     "checkpointer_from_env",
     "in_memory_checkpointer",
     "sqlite_checkpointer",
+    # run store durability + retention (Phase 8)
+    "PostgresRunStore",
+    "select_run_store",
+    "truncate_trace",
+    "postgres_reachable",
+]
+
+# Phase 8: durable Postgres-backed run store + trace retention/sampling.
+# Kept as a separate import block (rather than merged into the Section-G
+# import above) so this addition stays a clean append and doesn't reorder
+# the existing observability import.
+from .observability import (  # noqa: E402
+    DEFAULT_MAX_TRACE_EVENTS,
+    DEFAULT_RETENTION_DAYS,
+    DEFAULT_RETENTION_ROWS,
+    PostgresRunStore,
+    postgres_reachable,
+    select_run_store,
+    truncate_trace,
+)
+
+__all__ += [
+    "DEFAULT_MAX_TRACE_EVENTS",
+    "DEFAULT_RETENTION_DAYS",
+    "DEFAULT_RETENTION_ROWS",
 ]
