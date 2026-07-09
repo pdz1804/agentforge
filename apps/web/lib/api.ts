@@ -70,24 +70,41 @@ export async function runAgent(
   const reader = r.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+
+  const processFrame = (frame: string) => {
+    // Concatenate every `data:` line in the frame (SSE multi-line data rule).
+    const payload = frame
+      .split("\n")
+      .filter((l) => l.startsWith("data:"))
+      .map((l) => l.slice(5).replace(/^ /, ""))
+      .join("\n")
+      .trim();
+    if (!payload) return;
+    try {
+      onEvent(JSON.parse(payload) as TraceEvent);
+    } catch {
+      /* ignore malformed frame */
+    }
+  };
+
+  const drainBuffer = () => {
+    // Normalize CRLF so frame boundaries match regardless of proxy line endings.
+    buffer = buffer.replace(/\r\n/g, "\n");
+    let idx: number;
+    while ((idx = buffer.indexOf("\n\n")) !== -1) {
+      processFrame(buffer.slice(0, idx));
+      buffer = buffer.slice(idx + 2);
+    }
+  };
+
   for (;;) {
     const { value, done } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-    // SSE frames are separated by a blank line.
-    let idx: number;
-    while ((idx = buffer.indexOf("\n\n")) !== -1) {
-      const frame = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 2);
-      const line = frame.split("\n").find((l) => l.startsWith("data:"));
-      if (!line) continue;
-      const payload = line.slice(5).trim();
-      if (!payload) continue;
-      try {
-        onEvent(JSON.parse(payload) as TraceEvent);
-      } catch {
-        /* ignore malformed frame */
-      }
-    }
+    drainBuffer();
   }
+  // Flush any multibyte tail + a final frame not terminated by a blank line.
+  buffer += decoder.decode();
+  drainBuffer();
+  if (buffer.trim()) processFrame(buffer);
 }

@@ -47,8 +47,27 @@ the matching key in `.env` (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) and
 ```
 packages/agent-core/   # shared core (also consumed by FloraLens)
 apps/api/              # FastAPI backend
+apps/web/              # Next.js Agent Builder UI (manifest editor, live run panel,
+                       #   trace view, run history, 3D execution graph) + Playwright e2e
 infra/                 # docker-compose (Postgres)
 suites/                # eval task suites (Phase 9)
+```
+
+## Web UI (`apps/web`)
+
+Next.js 14 (App Router) Agent Builder. Authors a manifest (YAML editor + template
+gallery), validates it, runs it with the trace streamed live over SSE, lists run
+history, and reconstructs the run as a Three.js 3D execution graph (2D SVG +
+reduced-motion + no-WebGL fallback). It proxies `/api` + `/health` to the FastAPI
+backend via Next rewrites (single origin, no CORS). Playwright e2e covers page load,
+validation, a deterministic echo run, and a live OpenAI + `web_search` run.
+
+```bash
+# with the API running on :8077 (see below)
+cd apps/web
+npm install
+npm run build && npm start          # http://localhost:3000
+npx playwright test                 # e2e (set SKIP_LIVE=1 to skip the billed run)
 ```
 
 ## Quickstart

@@ -36,6 +36,8 @@ export default function Page() {
   useEffect(() => {
     getHealth().then(setHealth).catch(() => setHealth(null));
     refreshRuns();
+    // Abort any in-flight run stream if the page unmounts.
+    return () => abortRef.current?.abort();
   }, [refreshRuns]);
 
   function loadTemplate(key: string) {
@@ -106,12 +108,15 @@ export default function Page() {
         ctrl.signal,
       );
       setStatus((s) => (s === "error" ? s : "done"));
-      refreshRuns();
     } catch (e) {
       if ((e as Error).name !== "AbortError") {
         setRunError((e as Error).message);
         setStatus("error");
       }
+    } finally {
+      // Refresh history even on abort/error — the backend may have persisted it.
+      abortRef.current = null;
+      refreshRuns();
     }
   }
 

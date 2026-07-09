@@ -16,9 +16,12 @@ export default defineConfig({
   outputDir: `${EVIDENCE}/artifacts`,
   use: {
     baseURL: process.env.WEB_BASE || "http://localhost:3000",
+    // Explicit page.screenshot() calls are the primary evidence; video/trace are
+    // kept only on failure to avoid per-test recording overhead (which inflated
+    // run times and caused timing flakes).
     screenshot: "on",
-    video: "on",
-    trace: "on",
+    video: "retain-on-failure",
+    trace: "retain-on-failure",
     // SwiftShader gives headless Chromium a software WebGL context so the 3D
     // graph renders instead of falling back.
     launchOptions: { args: ["--use-gl=angle", "--use-angle=swiftshader", "--ignore-gpu-blocklist"] },

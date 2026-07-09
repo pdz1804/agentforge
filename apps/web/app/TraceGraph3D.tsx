@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import type { TraceEvent } from "@/lib/api";
-import type { Mesh } from "three";
+import type { Group, Mesh } from "three";
 
 // Derive a small graph from the trace: one central "agent" node plus a node per
 // distinct tool that was invoked. `activeIdx` marks the node touched most
@@ -30,7 +30,10 @@ function buildGraph(events: TraceEvent[]): { nodes: GraphNode[]; activeId: strin
 function hasWebGL(): boolean {
   try {
     const c = document.createElement("canvas");
-    return !!(c.getContext("webgl2") || c.getContext("webgl"));
+    const gl = c.getContext("webgl2") || c.getContext("webgl");
+    // Release the probe context so it doesn't count against the browser's limit.
+    (gl as WebGLRenderingContext | null)?.getExtension("WEBGL_lose_context")?.loseContext();
+    return !!gl;
   } catch {
     return false;
   }
@@ -73,7 +76,7 @@ function Edge({ to }: { to: GraphNode }) {
 }
 
 function Scene({ nodes, activeId }: { nodes: GraphNode[]; activeId: string | null }) {
-  const group = useRef<any>(null);
+  const group = useRef<Group>(null);
   useFrame((state) => {
     if (group.current) group.current.rotation.y = Math.sin(state.clock.elapsedTime * 0.3) * 0.35;
   });
