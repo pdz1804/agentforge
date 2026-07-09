@@ -7,6 +7,8 @@ Consumed by both AgentForge and FloraLens.
 
 from __future__ import annotations
 
+# Phase 5: durable checkpointer for multi-turn thread memory.
+from .checkpoint import checkpointer_from_env, in_memory_checkpointer, sqlite_checkpointer
 from .defaults import build_default_registries, load_prompts_dir
 from .errors import (
     AgentCoreError,
@@ -185,4 +187,8 @@ __all__ = [
     "run_suite",
     "evaluate_pair",
     "check_regression",
+    # checkpointer (Phase 5)
+    "checkpointer_from_env",
+    "in_memory_checkpointer",
+    "sqlite_checkpointer",
 ]

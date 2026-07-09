@@ -22,9 +22,13 @@ import operator
 from typing import Annotated, Any, TypedDict
 
 from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
+from .checkpoint import CheckpointerArg, checkpointer_from_env
+from .checkpoint import aclose as aclose_checkpointer
+from .checkpoint import materialize as materialize_checkpointer
 from .errors import AgentCoreError, UnknownReferenceError
 from .interfaces import (
     BaseTool,
@@ -85,22 +89,43 @@ class CompiledAgent:
         system_prompt: str,
         tools: dict[str, BaseTool],
         memory: MemoryProvider | None = None,
+        checkpointer: CheckpointerArg = None,
     ) -> None:
         self.manifest = manifest
         self._provider = provider
         self._system_prompt = system_prompt
         self._tools = tools
         self._memory = memory
+        # Opt-in durable checkpointer (Phase 5): None keeps the Phase 2
+        # contract (each run starts fresh, no cross-run bleed). When set,
+        # LangGraph persists state per `thread_id` so same-thread runs resume.
+        # May start out as a `PendingSqliteCheckpointer` spec (constructing
+        # the real async saver needs a running event loop; see
+        # `_ensure_checkpointer_ready`) and get replaced by the real saver on
+        # first use. A lock guards that one-time replacement against
+        # concurrent runs racing to materialize it.
+        self._checkpointer = checkpointer
+        self._checkpointer_lock = asyncio.Lock()
         if manifest.memory is not None:
             self._mem_scope: Scope | None = Scope(manifest.memory.scope.value)
             self._mem_namespace = manifest.memory.namespace
         else:
             self._mem_scope = None
             self._mem_namespace = ""
-        self._graph = self._build_graph()
+        builder = self._build_state_graph()
+        ready = self._checkpointer if isinstance(self._checkpointer, BaseCheckpointSaver) else None
+        self._graph = builder.compile(checkpointer=ready)
+        # A second, permanently checkpointer-less compile of the same graph
+        # definition. Eval runs always use this one: eval reproducibility
+        # requires every run to start fresh regardless of any configured
+        # checkpointer (see `arun`/`astream`), and a single shared
+        # `CompiledStateGraph` cannot safely have its `.checkpointer` toggled
+        # per call under concurrent runs, so a separate static instance is
+        # used instead of mutating `self._graph` around eval calls.
+        self._eval_graph = builder.compile(checkpointer=None)
 
     # -- graph construction ------------------------------------------------- #
-    def _build_graph(self):
+    def _build_state_graph(self) -> StateGraph:
         max_steps = self.manifest.limits.max_steps
 
         async def agent_node(state: _RunState, config: RunnableConfig | None = None) -> dict:
@@ -207,29 +232,70 @@ class CompiledAgent:
         builder.add_edge(START, "agent")
         builder.add_conditional_edges("agent", route_after_agent, {"tools": "tools", END: END})
         builder.add_edge("tools", "agent")
-        # No durable checkpointer in Phase 2: runs are single-shot, so each run
-        # starts from a fresh initial state and stays isolated (no cross-run
-        # state bleed, no custom-type serialization). A SQLite/Postgres
-        # checkpointer for multi-turn threads + resume lands with memory (Phase 5).
-        return builder.compile()
+        # Phase 2 default (checkpointer=None): runs are single-shot, so each
+        # run starts from a fresh initial state and stays isolated (no
+        # cross-run state bleed). Phase 5: an opt-in checkpointer (see
+        # `checkpoint.py`), compiled in by `__init__`, persists state per
+        # `thread_id`, so same-thread runs resume prior state (short-term
+        # multi-turn memory) while other threads stay isolated.
+        return builder
 
     # -- helpers ------------------------------------------------------------ #
     def _initial_state(
-        self, user_input: str, memories: list[MemoryItem] | None = None
+        self,
+        user_input: str,
+        memories: list[MemoryItem] | None = None,
+        include_system_prompt: bool = True,
     ) -> _RunState:
-        system = [Message(role="system", content=self._system_prompt)]
+        # `include_system_prompt` is False when a checkpointer already has this
+        # thread's history: the static system prompt was added on turn 1 and
+        # would otherwise re-accumulate (via the `messages` operator.add
+        # reducer) on every subsequent turn. Per-turn memory context is still
+        # added every time since it depends on this turn's query.
+        prefix: list[Message] = []
+        if include_system_prompt:
+            prefix.append(Message(role="system", content=self._system_prompt))
         if memories:
             joined = "\n".join(f"- {m.text}" for m in memories)
-            system.append(
+            prefix.append(
                 Message(role="system", content=f"Relevant memory about the user:\n{joined}")
             )
         return {
-            "messages": [*system, Message(role="user", content=user_input)],
+            "messages": [*prefix, Message(role="user", content=user_input)],
             "trace": [],
             "steps": 0,
             "answer": None,
             "pending": [],
         }
+
+    async def _thread_has_history(self, config: dict) -> bool:
+        """True if `config`'s thread already has persisted messages.
+
+        Only meaningful with a checkpointer configured; `StateGraph.aget_state`
+        raises without one, so callers must guard on `self._checkpointer`.
+        """
+        snapshot = await self._graph.aget_state(config)
+        return bool(snapshot.values.get("messages"))
+
+    async def _ensure_checkpointer_ready(self) -> None:
+        # Materializing a `PendingSqliteCheckpointer` needs a running event
+        # loop (see checkpoint.py), so it happens here, not in __init__. The
+        # lock makes the one-time swap-in safe if two runs start concurrently
+        # before it has completed; after that, `materialize` is a cheap no-op
+        # (or re-runs the saver's own idempotent `setup()`).
+        async with self._checkpointer_lock:
+            materialized = await materialize_checkpointer(self._checkpointer)
+            if materialized is not self._checkpointer:
+                self._checkpointer = materialized
+                self._graph.checkpointer = materialized
+
+    async def aclose(self) -> None:
+        """Release the checkpointer's resources (e.g. a sqlite connection's
+        background thread). Safe to call whether or not a checkpointer was
+        ever configured or materialized; a no-op in the default (Phase 2)
+        single-shot setup.
+        """
+        await aclose_checkpointer(self._checkpointer)
 
     async def _retrieve(self, user_input: str, eval_mode: bool) -> list[MemoryItem]:
         # Eval mode is memory-isolated (deterministic); a memory failure must
@@ -277,12 +343,22 @@ class CompiledAgent:
     ) -> RunResult:
         """Run to completion and return the final answer + trace."""
         memories = await self._retrieve(user_input, eval_mode)
+        config = self._config(eval_mode, thread_id)
+        include_system_prompt = True
+        # Eval mode stays single-shot regardless of any configured
+        # checkpointer: eval tasks reuse a stable thread_id per task
+        # (`eval-<task.id>`), and eval reproducibility requires each run to
+        # start fresh rather than resuming a prior eval's state.
+        if self._checkpointer is not None and not eval_mode:
+            await self._ensure_checkpointer_ready()
+            include_system_prompt = not await self._thread_has_history(config)
+        graph = self._eval_graph if eval_mode else self._graph
         token = _RUN_EVAL.set(eval_mode)
         try:
             final: dict[str, Any] = await asyncio.wait_for(
-                self._graph.ainvoke(
-                    self._initial_state(user_input, memories),
-                    self._config(eval_mode, thread_id),
+                graph.ainvoke(
+                    self._initial_state(user_input, memories, include_system_prompt),
+                    config,
                 ),
                 timeout=self.manifest.limits.wall_clock_s,
             )
@@ -310,14 +386,22 @@ class CompiledAgent:
         emitted and the stream ends cleanly.
         """
         memories = await self._retrieve(user_input, eval_mode)
+        config = self._config(eval_mode, thread_id)
+        include_system_prompt = True
+        # See `arun`: eval mode always stays single-shot, even with a
+        # checkpointer configured.
+        if self._checkpointer is not None and not eval_mode:
+            await self._ensure_checkpointer_ready()
+            include_system_prompt = not await self._thread_has_history(config)
+        graph = self._eval_graph if eval_mode else self._graph
         answer: str | None = None
         last_step = 0
         token = _RUN_EVAL.set(eval_mode)
         try:
             async with asyncio.timeout(self.manifest.limits.wall_clock_s):
-                async for update in self._graph.astream(
-                    self._initial_state(user_input, memories),
-                    self._config(eval_mode, thread_id),
+                async for update in graph.astream(
+                    self._initial_state(user_input, memories, include_system_prompt),
+                    config,
                     stream_mode="updates",
                 ):
                     for node_output in update.values():
@@ -391,6 +475,7 @@ def compile_agent(
     registries: Registries,
     agents: dict[str, AgentManifest] | None = None,
     _visiting: frozenset[str] = frozenset(),
+    checkpointer: CheckpointerArg = None,
 ) -> CompiledAgent:
     """Resolve a manifest's references into a runnable ``CompiledAgent``.
 
@@ -398,9 +483,24 @@ def compile_agent(
     delegates to; each is compiled recursively and exposed as an ``ask_<id>``
     tool. Cycles are rejected. ``registries.get`` raises a clear error on any
     missing tool/model/prompt/memory reference.
+
+    ``checkpointer`` opts the top-level compiled agent into durable multi-turn
+    thread memory (Phase 5): pass an explicit saver (see ``checkpoint.py``),
+    or leave it ``None`` to fall back to ``AGENTFORGE_CHECKPOINT_DB``. Either
+    way the default (no arg, no env var) is unchanged from Phase 2:
+    single-shot runs, no cross-run state bleed. Recursively compiled
+    sub-agents never inherit a checkpointer, top-level arg or env: each
+    ``ask_<id>`` call always runs with ``thread_id="default"`` (see
+    ``SubAgentTool.run``), so persisting their state across supervisor calls
+    would silently reintroduce that bleed for sub-agents.
     """
     if manifest.id in _visiting:
         raise AgentCoreError(f"sub-agent cycle detected at '{manifest.id}'")
+
+    is_top_level = not _visiting
+    resolved_checkpointer = checkpointer
+    if resolved_checkpointer is None and is_top_level:
+        resolved_checkpointer = checkpointer_from_env()
 
     provider = registries.models.get(manifest.model.provider)
     system_prompt = registries.prompts.get(manifest.prompt_ref)
@@ -422,4 +522,6 @@ def compile_agent(
         if manifest.memory is not None
         else None
     )
-    return CompiledAgent(manifest, provider, system_prompt, tools, memory=memory)
+    return CompiledAgent(
+        manifest, provider, system_prompt, tools, memory=memory, checkpointer=resolved_checkpointer
+    )
