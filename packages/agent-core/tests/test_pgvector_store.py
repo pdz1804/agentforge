@@ -160,6 +160,60 @@ def test_pgvector_store_survives_a_fresh_instance():
     asyncio.run(scenario())
 
 
+def test_pgvector_store_search_non_positive_k_returns_empty():
+    # k<=0 short-circuits before any connection (a raw negative LIMIT would
+    # error in Postgres), matching InMemoryVectorStore — no DB needed.
+    store = PgVectorStore("postgresql://x/y", dim=3)
+
+    async def scenario():
+        assert await store.search([1.0, 0.0, 0.0], k=0) == []
+        assert await store.search([1.0, 0.0, 0.0], k=-1) == []
+
+    asyncio.run(scenario())
+
+
+@requires_pgvector_db
+def test_pgvector_store_rejects_existing_table_with_different_dim():
+    table = f"agent_vectors_test_{uuid.uuid4().hex[:12]}"
+
+    async def scenario():
+        store3 = PgVectorStore(TEST_DSN, dim=3, table=table)
+        await store3.add("a", [1.0, 0.0, 0.0])  # creates the table at dim 3
+        await store3.aclose()
+
+        store4 = PgVectorStore(TEST_DSN, dim=4, table=table)  # same table, wrong dim
+        with pytest.raises(ValueError, match="already exists with embedding dim 3"):
+            await store4.add("b", [1.0, 0.0, 0.0, 0.0])
+        await store4.aclose()
+
+        # Drop via a correctly-dimmed store (store4 can't open its pool).
+        dropper = PgVectorStore(TEST_DSN, dim=3, table=table)
+        await _drop_table(dropper, table)
+        await dropper.aclose()
+
+    asyncio.run(scenario())
+
+
+@requires_pgvector_db
+def test_pgvector_store_breaks_score_ties_deterministically_by_id():
+    table = f"agent_vectors_test_{uuid.uuid4().hex[:12]}"
+
+    async def scenario():
+        store = PgVectorStore(TEST_DSN, dim=3, table=table)
+        try:
+            # Same vector under three ids => identical cosine distance; the
+            # secondary ORDER BY id must give a stable, ascending order.
+            for vid in ("c", "a", "b"):
+                await store.add(vid, [1.0, 0.0, 0.0])
+            hits = await store.search([1.0, 0.0, 0.0], k=3)
+            assert [h.id for h in hits] == ["a", "b", "c"]
+        finally:
+            await _drop_table(store, table)
+            await store.aclose()
+
+    asyncio.run(scenario())
+
+
 async def _drop_table(store: PgVectorStore, table: str) -> None:
     # Reaches into the private pool to drop the scratch table created for this
     # test run; not part of PgVectorStore's public contract.

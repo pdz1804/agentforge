@@ -54,7 +54,8 @@ class PgVectorStore(VectorStore):
     ) -> None:
         # Table is interpolated into DDL/DML below (asyncpg has no identifier
         # placeholder), so it's validated at the boundary rather than trusted.
-        if not _TABLE_NAME_RE.match(table):
+        # fullmatch (not match): match's `$` also accepts a trailing newline.
+        if not _TABLE_NAME_RE.fullmatch(table):
             raise ValueError(f"invalid table name: {table!r}")
         if dim <= 0:
             raise ValueError(f"dim must be positive, got {dim}")
@@ -80,17 +81,53 @@ class PgVectorStore(VectorStore):
                 pool = await asyncpg.create_pool(
                     self._dsn, min_size=1, max_size=5, init=self._init_connection
                 )
-                async with pool.acquire() as conn:
-                    await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-                    await conn.execute(
-                        f"CREATE TABLE IF NOT EXISTS {self._table} ("
-                        "id text PRIMARY KEY, "
-                        f"embedding vector({self._dim}) NOT NULL, "
-                        "text text NOT NULL DEFAULT '', "
-                        "meta jsonb NOT NULL DEFAULT '{}'::jsonb)"
-                    )
+                try:
+                    async with pool.acquire() as conn:
+                        await self._ensure_schema(conn)
+                except BaseException:
+                    # Never leak the freshly created pool (and its open
+                    # connections) if schema setup fails — close it before
+                    # propagating so a retry starts from a clean slate.
+                    await pool.close()
+                    raise
                 self._pool = pool
         return self._pool
+
+    async def _ensure_schema(self, conn: asyncpg.Connection) -> None:
+        # CREATE EXTENSION / TABLE IF NOT EXISTS are not concurrency-safe in
+        # Postgres: two processes racing on first use can still raise a
+        # duplicate-object error. Treat that as success — another worker won.
+        try:
+            await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            await conn.execute(
+                f"CREATE TABLE IF NOT EXISTS {self._table} ("
+                "id text PRIMARY KEY, "
+                f"embedding vector({self._dim}) NOT NULL, "
+                "text text NOT NULL DEFAULT '', "
+                "meta jsonb NOT NULL DEFAULT '{}'::jsonb)"
+            )
+        except (
+            asyncpg.exceptions.DuplicateObjectError,
+            asyncpg.exceptions.DuplicateTableError,
+            asyncpg.exceptions.UniqueViolationError,
+        ):
+            pass
+        # A pre-existing table with a different vector dimension is silently
+        # kept by CREATE TABLE IF NOT EXISTS, so add()/search() would then fail
+        # deep in Postgres on a size mismatch. Detect it and fail loudly with
+        # actionable config guidance instead. (pgvector's atttypmod == the
+        # declared dimension; -1 for an unbounded `vector`.)
+        actual_dim = await conn.fetchval(
+            "SELECT atttypmod FROM pg_attribute "
+            "WHERE attrelid = $1::regclass AND attname = 'embedding' AND NOT attisdropped",
+            self._table,
+        )
+        if actual_dim is not None and actual_dim > 0 and actual_dim != self._dim:
+            raise ValueError(
+                f"table {self._table!r} already exists with embedding dim {actual_dim}, "
+                f"but this store is configured for dim {self._dim}; set "
+                f"{ENV_VECTOR_DIM}={actual_dim} or use a different table"
+            )
 
     async def add(
         self, id: str, vector: list[float], text: str = "", meta: dict[str, Any] | None = None
@@ -120,13 +157,17 @@ class PgVectorStore(VectorStore):
     async def search(self, vector: list[float], k: int = 5) -> list[VectorHit]:
         if len(vector) != self._dim:
             raise ValueError(f"query vector has {len(vector)} dims, expected {self._dim}")
+        if k <= 0:
+            # Match InMemoryVectorStore: a non-positive k yields no hits (a raw
+            # negative LIMIT would otherwise error in Postgres).
+            return []
         pool = await self._ensure_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 f"""
                 SELECT id, text, meta, 1 - (embedding <=> $1) AS score
                 FROM {self._table}
-                ORDER BY embedding <=> $1
+                ORDER BY embedding <=> $1, id
                 LIMIT $2
                 """,
                 vector,
@@ -162,6 +203,21 @@ def select_vector_store() -> VectorStore:
     if backend != "pgvector":
         logger.info(
             "%s not set to 'pgvector'; using in-memory vector store", ENV_VECTOR_STORE
+        )
+        return InMemoryVectorStore()
+
+    # The reachability probe below only opens a TCP/auth connection; it can't
+    # see whether the optional `pgvector` Python package (the asyncpg codec) is
+    # installed. Without it, the FIRST add/search would raise ModuleNotFoundError
+    # from the pool init hook — well past startup, with no fallback. Verify it
+    # here so a missing extra degrades to in-memory instead.
+    try:
+        import pgvector.asyncpg  # noqa: F401
+    except ImportError:
+        logger.warning(
+            "%s=pgvector but the 'pgvector' package is not installed "
+            "(pip install 'agent-core[postgres]'); falling back to in-memory vector store",
+            ENV_VECTOR_STORE,
         )
         return InMemoryVectorStore()
 
