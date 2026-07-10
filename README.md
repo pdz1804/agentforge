@@ -5,7 +5,7 @@ Multi-Agent Workbench & Code Sandbox. See [`PRD.md`](./PRD.md) and
 
 ## Status
 
-**Phases 0–6, 8 (partial) implemented. Phase 7 (3D graph) in-progress.**
+**Phases 0–10 and 12 implemented. Phase 11 (auth/hardening) partial.**
 
 - `packages/agent-core` — declarative Agent Manifest schema, pluggable registries
   (tools / prompts / models / memory / MCP), core interfaces (`BaseTool`,
@@ -30,8 +30,13 @@ Multi-Agent Workbench & Code Sandbox. See [`PRD.md`](./PRD.md) and
   Proxies `/api` to FastAPI backend (no CORS). Playwright e2e tests included.
 - `infra/` — Postgres + the API via Docker Compose.
 
-Deferred: Phase 9 (Agent eval harness — in development); Phase 10 (CI test pyramid);
-Phase 11 (auth); Phase 12 (cross-product check). E2B sandbox backend deferred.
+Shipped since: Phase 9 (agent eval harness — `eval.py`, `POST /api/eval`, `eval-panel.tsx`:
+dev/held-out split, programmatic/rubric/LLM-judge scoring, regression gate); Phase 10 (CI test
+pyramid — `.github/workflows/ci.yml` + conformance/extension-conformance tests + sandbox-security
+gate); Phase 8 durable `PostgresRunStore` + retention; Phase 12 (FloraLens naturalist assistant
+runs on unmodified `agent_core`). Phase 11 is **partial**: opt-in shared-key auth
+(`AGENTFORGE_API_KEY`), rate limiting, and secret redaction in traces/logs are in place, but there
+is no per-user isolation yet (a single shared key). E2B sandbox backend still deferred (Docker executor ships).
 
 ### Choosing a provider
 

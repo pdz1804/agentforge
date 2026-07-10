@@ -8,13 +8,19 @@ Stack: FastAPI + LangGraph + mem0 + sandbox (Python) / Next.js + Three.js (TS).
 **Status legend:** ☐ pending · ◐ in-progress · ☑ done
 
 ## Progress
-- **2026-07-10 (Phase 0 web UI + Phase 7 partial)** — Agent Builder web UI shipped (Next.js 14, port 3000).
+- **2026-07-10 (Phases 7, 9, 10 complete; 11 partial; 12 proven)** — Eval harness shipped: `eval.py`
+  + `POST /api/eval` + `eval-panel.tsx` (dev/held-out split with disjointness check, programmatic/rubric/LLM-judge
+  scoring, deterministic eval mode, regression gate). CI shipped (`.github/workflows/ci.yml`: lint → python tests →
+  sandbox-security matrix → web build) with `test_conformance.py` + `test_extension_conformance.py`. Phase 7 3D graph
+  timeline scrubber + reduced-motion fallback shipped. Phase 8 durable `PostgresRunStore` + retention/prune shipped.
+  Phase 11 hardening: opt-in shared-key auth (`AGENTFORGE_API_KEY`), rate limiting, secret redaction in traces/logs —
+  **partial: single shared key, no per-user isolation**. Phase 12: FloraLens naturalist assistant runs on unmodified
+  `agent_core` (US-6 met).
+- **2026-07-10 (Phase 0 web UI + Phase 7)** — Agent Builder web UI shipped (Next.js 14, port 3000).
   Features: YAML manifest editor + template gallery, live SSE run panel (stream + trace), run history, dark/light theme toggle,
   Builder/About tabs, intro page. **3D Execution Graph** (Phase 7): TraceGraph3D.tsx (Three.js, agent + tool nodes, 
-  pulsing on activation, edge highlighting). Timeline scrubber in-progress. Single-origin proxy to API (:8077). 
-  Playwright e2e tests. **Deferred:** trace-viewer UI polish, timeline replay, advanced filtering.
-- **2026-07-10 (Phase 9-10 in-progress)** — Agent evaluation harness framework under development (dev/held-out split, 
-  scoring modes). CI test pyramid being added (unit → contract → integration → extension-conformance → e2e + security matrix).
+  pulsing on activation, edge highlighting, timeline scrubber). Single-origin proxy to API (:8077). 
+  Playwright e2e tests.
 - **2026-07-06 (Phase 8, observability)** — Run persistence + token/cost. `RunRecord` (status, answer, full trace, usage, cost) + `RunStore` (`InMemoryRunStore` default, newest-first, bounded). `POST /api/runs` streams `run_started` event, accumulates trace, **persists on every exit path** (compile-fail, run-fail, timeout, success, client-disconnect via `finally`, idempotent). Token usage from trace events; `token_cost` from price table. `GET /api/runs` (summaries), `GET /api/runs/{id}`, `GET /api/runs/{id}/export`. **76 tests** (68 offline + 8 docker), ruff clean. **Deferred:** trace-viewer UI, Postgres store, trace-size limits.
 - **2026-07-06 (Phase 6, multi-agent + UI deferred then shipped)** — Agents-as-tools: `compile_agent` recursively compiles supervisor's `sub_agents`, exposes as `ask_<id>` tools. Cycle detection + tool-name collision guard. `eval_mode` propagates via contextvar (deterministic + memory-isolated). **69 tests**, ruff clean. **Then Phase 0 web:** Next.js Agent Builder UI shipped later (full feature set above).
 - **2026-07-06 (Phase 5, long-term memory)** — `MemoryProvider`: `InMemoryMemoryProvider` (default) + `Mem0MemoryProvider` (semantic). On run: retrieve relevant memories, inject as system context, persist after answering. **Eval-mode isolated** (no retrieve/persist). Memory API: `GET/POST/DELETE /api/memory`. **57 tests**, ruff clean. **Deferred:** durable SQLite checkpointer (Phase 5b); mem0 live smoke.
@@ -32,14 +38,14 @@ Stack: FastAPI + LangGraph + mem0 + sandbox (Python) / Next.js + Three.js (TS).
 | 2 | LangGraph runtime + single-agent run | 1 | Multi-agent orchestration | ☑ |
 | 3 | Built-in tools + web search + MCP connector | 1,2 | Tools, MCP | ☑ |
 | 4 | Code sandbox + security test matrix | 1 | **Secure sandbox + safety testing** | ☑ |
-| 5 | Memory (mem0 + checkpointer) | 1,2 | Memory | ☑ (long-term + short-term, Postgres deferred) |
+| 5 | Memory (mem0 + checkpointer) | 1,2 | Memory | ☑ (long-term memory + durable SQLite thread checkpointer shipped) |
 | 6 | Multi-agent supervisor + Agent Builder UI | 2,3,5 | Orchestration, frontend | ☑ (supervisor + full web UI shipped) |
-| 7 | Live 3D execution graph | 2,6 | Three.js | ◐ (TraceGraph3D.tsx exists; timeline scrubber in-progress) |
-| 8 | Traces, observability, cost accounting | 2 | Observability | ☑ (persistence, cost, API; UI deferred) |
-| 9 | **Agent evaluation harness (dev/held-out)** | 2,3,5 | **Validation/testing of agents** | ◐ (being built) |
-| 10 | Software test pyramid + CI gates | 1–5,9 | **System correctness (PRD §14.5–14.7)** | ◐ (being added) |
-| 11 | Auth, hardening, secret redaction | all | Platform, security | ☐ |
-| 12 | Cross-product reuse check (FloraLens) | 1–5 | Integration proof | ☐ |
+| 7 | Live 3D execution graph | 2,6 | Three.js | ☑ (TraceGraph3D.tsx; timeline scrubber + reduced-motion fallback shipped) |
+| 8 | Traces, observability, cost accounting | 2 | Observability | ☑ (persistence, cost, API; Postgres store + retention shipped) |
+| 9 | **Agent evaluation harness (dev/held-out)** | 2,3,5 | **Validation/testing of agents** | ☑ (eval.py + `/api/eval` + eval-panel.tsx; dev/held-out split, scoring modes, regression gate) |
+| 10 | Software test pyramid + CI gates | 1–5,9 | **System correctness (PRD §14.5–14.7)** | ☑ (CI workflow + conformance/extension-conformance tests + sandbox-security gate) |
+| 11 | Auth, hardening, secret redaction | all | Platform, security | ◐ (shared-key auth + rate limits + trace/log redaction shipped; no per-user isolation yet) |
+| 12 | Cross-product reuse check (FloraLens) | 1–5 | Integration proof | ☑ (FloraLens naturalist assistant runs on unmodified `agent_core`) |
 
 ---
 
