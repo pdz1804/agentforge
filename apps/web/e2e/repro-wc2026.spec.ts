@@ -8,6 +8,10 @@ const SHOTS = "../../../plans/260709-1427-dual-app-buildout/reports/agentforge-u
 //     with the reason — never a silent no-answer or a misleading error.
 test.describe("world cup 2026 query", () => {
   test("A: answers normally (default template)", async ({ page }) => {
+    // Live run: needs a real OpenAI key + Tavily (web_search). Gated behind
+    // SKIP_LIVE so it self-skips with a clear reason in CI (no keys) instead of
+    // failing, matching the SKIP_LIVE pattern used by the other live specs.
+    test.skip(!!process.env.SKIP_LIVE, "live run disabled — needs OPENAI_API_KEY + Tavily");
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(String(e)));
     await page.goto("/");
@@ -21,6 +25,8 @@ test.describe("world cup 2026 query", () => {
   });
 
   test("B: step-budget exhaustion shows a clear stopped state (not error)", async ({ page }) => {
+    // Live run (OpenAI + web_search). Gated behind SKIP_LIVE like case A above.
+    test.skip(!!process.env.SKIP_LIVE, "live run disabled — needs OPENAI_API_KEY + Tavily");
     await page.goto("/");
     await page.getByTestId("template-select").selectOption("assistant");
     // Force the pathological case: only one step, so the model's tool request

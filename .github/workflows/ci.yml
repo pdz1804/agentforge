@@ -102,3 +102,107 @@ jobs:
 
       - name: Build (Next.js production build must succeed)
         run: npm run build
+
+  web-e2e:
+    name: web-e2e
+    # Real, build-blocking end-to-end gate. AgentForge runs FULLY OFFLINE via
+    # the built-in `echo` model provider (no API key, no model download), so the
+    # author -> run -> trace(/3D) -> eval -> timeline UI flow and a concurrent
+    # /api/runs p95 smoke both execute for real here. Live-LLM specs (OpenAI +
+    # Tavily) self-skip via SKIP_LIVE with a clear reason -- they are NOT gated.
+    runs-on: ubuntu-latest
+    env:
+      # Make every live-LLM spec self-skip (no keys in CI) instead of failing.
+      SKIP_LIVE: "1"
+      # The uvicorn process inherits this: give the /api/runs load smoke ample
+      # headroom over the default 60/min per-IP limit so the burst measures
+      # latency, not rate-limiting (429s). Read per-request from the env.
+      AGENTFORGE_RATE_LIMIT_RUNS_PER_MIN: "100000"
+      # Web proxies /api and /health here; Playwright drives the web at :3000.
+      AGENTFORGE_API_BASE: "http://127.0.0.1:8077"
+      WEB_BASE: "http://localhost:3000"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            packages/agent-core/pyproject.toml
+            apps/api/requirements.txt
+
+      - name: Install agent-core + API deps (offline echo provider -- no LLM keys)
+        # No openai/anthropic extras: the offline e2e + load smoke exercise only
+        # the built-in echo provider, so the provider SDKs are not needed here.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "packages/agent-core[dev]"
+          pip install -r apps/api/requirements.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install web dependencies
+        working-directory: apps/web
+        run: npm install
+
+      - name: Install Playwright browser (chromium only)
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium
+
+      - name: Start API (FastAPI, echo provider) and wait for /health
+        run: |
+          nohup uvicorn app.main:app --host 127.0.0.1 --port 8077 --app-dir apps/api > api.log 2>&1 &
+          echo $! > api.pid
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8077/health > /dev/null 2>&1; then
+              echo "API healthy after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "API did not become healthy within 60s"; cat api.log; exit 1
+
+      - name: Build web (Next.js production build)
+        working-directory: apps/web
+        run: npm run build
+
+      - name: Start web (production) and wait for it to answer
+        working-directory: apps/web
+        run: |
+          nohup npm run start > web.log 2>&1 &
+          echo $! > web.pid
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:3000 > /dev/null 2>&1; then
+              echo "web up after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "web did not start within 60s"; cat web.log; exit 1
+
+      - name: "Playwright e2e (offline: author->run->trace/3D, eval, timeline; live specs skip)"
+        working-directory: apps/web
+        run: npx playwright test
+
+      - name: Load / p95 smoke -- concurrent /api/runs (echo)
+        # 40 echo runs at concurrency 8 against the real SSE run endpoint; each
+        # response is fully drained. Generous 4s p95 (smoke gate, not a
+        # benchmark) trips only on a large latency regression or errors under
+        # trivial concurrency.
+        run: |
+          cat > runs-body.json <<'JSON'
+          {"manifest":{"id":"echo_agent","version":1,"model":{"provider":"echo","name":"echo","temperature":0.2},"prompt_ref":"prompts/echo_agent.md","tools":["echo"]},"input":"load smoke","eval_mode":true}
+          JSON
+          node apps/web/e2e/load-smoke.mjs \
+            --url http://127.0.0.1:8077/api/runs \
+            --method POST --body-file runs-body.json \
+            --count 40 --concurrency 8 --p95 4000
+
+      - name: Upload Playwright evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentforge-web-e2e-evidence
+          path: plans/260709-1427-dual-app-buildout/reports/agentforge-ui
+          if-no-files-found: ignore
