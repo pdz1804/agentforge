@@ -52,7 +52,9 @@ class StoredBaseline(BaseModel):
 
 class EvalReportStore(ABC):
     @abstractmethod
-    async def save_report(self, report_id: str, report: DevHeldOutReport, created_at: str = "") -> StoredEvalReport:
+    async def save_report(
+        self, report_id: str, report: DevHeldOutReport, created_at: str = ""
+    ) -> StoredEvalReport:
         raise NotImplementedError
 
     @abstractmethod
@@ -95,7 +97,9 @@ class InMemoryEvalReportStore(EvalReportStore):
         # apart from the stored report so a non-judge report's bytes are unchanged.
         self._spot_checks: dict[str, list[SpotCheckSample]] = {}
 
-    async def save_report(self, report_id: str, report: DevHeldOutReport, created_at: str = "") -> StoredEvalReport:
+    async def save_report(
+        self, report_id: str, report: DevHeldOutReport, created_at: str = ""
+    ) -> StoredEvalReport:
         stored = StoredEvalReport(
             id=report_id,
             manifest_id=report.manifest_id,

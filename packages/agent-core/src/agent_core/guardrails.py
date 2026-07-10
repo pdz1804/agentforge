@@ -111,7 +111,10 @@ _DISCLAIMER = (
 # the co-occurrence of an "educational/informational" phrase with a "not advice"
 # phrase, which is what any reasonable disclaimer contains.
 _HAS_EDUCATIONAL = re.compile(r"educational|informational|for information", re.IGNORECASE)
-_HAS_NOT_ADVICE = re.compile(r"not (?:a substitute for |)?(?:professional |medical |legal |financial |)advice", re.IGNORECASE)
+_HAS_NOT_ADVICE = re.compile(
+    r"not (?:a substitute for |)?(?:professional |medical |legal |financial |)advice",
+    re.IGNORECASE,
+)
 
 
 class EducationalDisclaimerGuardrail(Guardrail):
