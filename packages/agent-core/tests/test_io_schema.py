@@ -16,16 +16,25 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from pydantic import BaseModel
 
 from agent_core import (
     AgentCoreError,
     ModelProvider,
     ModelResponse,
+    UnknownReferenceError,
     build_default_registries,
     compile_agent,
     load_manifest_dict,
     resolve_manifest,
 )
+
+
+class FlowerOrder(BaseModel):
+    """A named io_schema target: the runtime validates payloads against it."""
+
+    flower: str
+    quantity: int
 
 
 class _FixedAnswerProvider(ModelProvider):
@@ -58,17 +67,21 @@ def _manifest(
     return m
 
 
-def _compile_echo(io_schema: dict | None = None):
+def _compile_echo(io_schema: dict | None = None, schemas: dict | None = None):
     """Offline echo model: the answer is the user input verbatim."""
     registries = build_default_registries()
+    for name, model in (schemas or {}).items():
+        registries.schemas.register(name, model)
     manifest = load_manifest_dict(_manifest("echo", io_schema=io_schema))
     resolve_manifest(manifest, registries)
     return compile_agent(manifest, registries)
 
 
-def _compile_fixed(answer: str, io_schema: dict | None = None, guardrails=None):
+def _compile_fixed(answer: str, io_schema: dict | None = None, guardrails=None, schemas=None):
     registries = build_default_registries()
     registries.models.register("fixed", _FixedAnswerProvider(answer))
+    for name, model in (schemas or {}).items():
+        registries.schemas.register(name, model)
     manifest = load_manifest_dict(
         _manifest("fixed", io_schema=io_schema, guardrails=guardrails)
     )
@@ -120,12 +133,58 @@ def test_output_schema_accepts_conforming_answer():
 
 
 # --------------------------------------------------------------------------- #
-# Unknown shape keyword fails fast at compile time
+# Named Pydantic-model io_schema: registered by name, enforced at runtime
 # --------------------------------------------------------------------------- #
-def test_unknown_io_shape_fails_at_compile():
+def test_named_output_schema_rejects_non_conforming_answer():
+    # Valid JSON object, but missing the required `quantity` field.
+    agent = _compile_fixed(
+        '{"flower": "rose"}',
+        io_schema={"output": "FlowerOrder"},
+        schemas={"FlowerOrder": FlowerOrder},
+    )
     with pytest.raises(AgentCoreError) as exc:
-        _compile_echo({"input": "CoderRequest"})  # not in the shape vocabulary
-    assert "not recognized" in str(exc.value)
+        asyncio.run(agent.arun("give me an order"))
+    assert "output" in str(exc.value).lower()
+    assert "FlowerOrder" in str(exc.value)
+
+
+def test_named_output_schema_accepts_conforming_answer():
+    agent = _compile_fixed(
+        '{"flower": "rose", "quantity": 12}',
+        io_schema={"output": "FlowerOrder"},
+        schemas={"FlowerOrder": FlowerOrder},
+    )
+    result = asyncio.run(agent.arun("give me an order"))
+    assert result.answer == '{"flower": "rose", "quantity": 12}'
+    assert result.stopped_reason == "answer"
+
+
+def test_named_input_schema_rejects_non_conforming_input():
+    agent = _compile_echo(
+        {"input": "FlowerOrder"}, schemas={"FlowerOrder": FlowerOrder}
+    )
+    with pytest.raises(AgentCoreError) as exc:
+        asyncio.run(agent.arun('{"flower": "rose"}'))  # missing quantity
+    assert "input" in str(exc.value).lower()
+
+
+def test_named_input_schema_accepts_conforming_input():
+    agent = _compile_echo(
+        {"input": "FlowerOrder"}, schemas={"FlowerOrder": FlowerOrder}
+    )
+    result = asyncio.run(agent.arun('{"flower": "rose", "quantity": 3}'))
+    assert result.answer == '{"flower": "rose", "quantity": 3}'
+
+
+# --------------------------------------------------------------------------- #
+# Unknown schema name fails fast at load/compile time
+# --------------------------------------------------------------------------- #
+def test_unknown_io_schema_name_fails_fast():
+    # An io_schema side that is neither a content-shape keyword nor a registered
+    # model is an unknown reference — the same loud contract as tools/guardrails.
+    with pytest.raises(UnknownReferenceError) as exc:
+        _compile_echo({"input": "CoderRequest"})  # not registered
+    assert "CoderRequest" in str(exc.value)
 
 
 # --------------------------------------------------------------------------- #

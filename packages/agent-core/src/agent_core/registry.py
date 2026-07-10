@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Generic, TypeVar
 
+from pydantic import BaseModel
+
 from .errors import RegistrationError, UnknownReferenceError
 from .guardrails import Guardrail
 from .interfaces import BaseTool, MemoryProvider, ModelProvider
@@ -76,4 +78,12 @@ class Registries:
     # over the final answer (see guardrails.py / runtime enforcement).
     guardrails: Registry[Guardrail] = field(
         default_factory=lambda: Registry("guardrail")
+    )
+    # Named Pydantic models an `io_schema` side may reference by name. Empty by
+    # default (io_schema stays opt-in): a manifest that declares only
+    # content-shape keywords, or no io_schema at all, never touches this
+    # registry. Registered like every other kind (register-by-name), resolved
+    # fail-fast in the loader, and enforced by the runtime.
+    schemas: Registry[type[BaseModel]] = field(
+        default_factory=lambda: Registry("schema")
     )

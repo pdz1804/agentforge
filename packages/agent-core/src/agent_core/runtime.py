@@ -27,7 +27,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from .checkpoint import CheckpointerArg, checkpointer_from_env
 from .checkpoint import aclose as aclose_checkpointer
@@ -45,8 +45,8 @@ from .interfaces import (
     ToolCall,
     ToolResult,
 )
-from .registry import Registries
-from .schema import AgentManifest
+from .registry import Registries, Registry
+from .schema import AgentManifest, resolve_content_shape
 
 logger = logging.getLogger(__name__)
 
@@ -91,55 +91,45 @@ class _RunState(TypedDict):
 # ------------------------------------------------------------------------- #
 # io_schema enforcement (PRD Section 8.2 `io_schema`)
 #
-# A manifest's `io_schema.input` / `io_schema.output` name the required *shape*
-# of the user input and the final answer. The harness has no Pydantic-model
-# registry to resolve arbitrary model names against (that would be a separate
-# subsystem), so enforcement is scoped to a small, documented vocabulary of
-# content shapes that can be checked offline with stdlib `json` and no new
-# dependencies:
+# A manifest's `io_schema.input` / `io_schema.output` name the required shape of
+# the user input and the final answer. A side is one of:
 #
-#   text / str / string  -> any string (no runtime check; declares "plain text")
-#   json                 -> must parse as JSON (any JSON value)
-#   json_object / object -> must parse as a JSON object (mapping)
-#   json_array / array   -> must parse as a JSON array (list)
+#   * a built-in *content-shape* keyword (text / json / json_object /
+#     json_array, plus aliases) — see `schema.resolve_content_shape` — checked
+#     offline with stdlib `json` and no new dependencies, or
+#   * the name of a Pydantic model registered in `Registries.schemas`, which the
+#     runtime validates the input/output against (parse JSON, then
+#     `model_validate`).
 #
-# The whole feature is opt-in: a manifest with no `io_schema` (or one whose
-# fields are None/"text") produces `None` shapes below, so no validation runs
-# and behavior is byte-for-byte unchanged. Resolving named Pydantic models is a
-# future extension that can widen this vocabulary without changing the contract.
-_IO_SHAPE_ALIASES = {
-    "json": "json",
-    "json_object": "json_object",
-    "object": "json_object",
-    "json_array": "json_array",
-    "array": "json_array",
-}
-
-# Shapes that impose no runtime check: a declared plain-text side is satisfied
-# by any string, so it collapses to "no constraint".
-_IO_TEXT_SHAPES = frozenset({"", "text", "str", "string"})
+# A resolved constraint is therefore one of: None (no check), a canonical
+# content-shape string, or a `type[BaseModel]`. The whole feature is opt-in: a
+# manifest with no `io_schema` (or plain-text sides) resolves to `None`
+# constraints below, so no validation runs and behavior is byte-for-byte
+# unchanged.
+_IOConstraint = str | type[BaseModel] | None
 
 
-def _normalize_io_shape(raw: str | None) -> str | None:
-    """Map a manifest `io_schema` shape keyword to a canonical shape, or None.
+def _resolve_io_constraint(
+    raw: str | None, schemas: Registry[type[BaseModel]] | None
+) -> _IOConstraint:
+    """Resolve one `io_schema` side to a runtime constraint (fail-fast).
 
-    None means "no constraint" (nothing declared, or a plain-text side). An
-    unrecognized keyword raises ``AgentCoreError`` so a manifest typo fails
-    fast at compile time — the same loud-on-typo contract tools and guardrails
-    already follow — rather than silently enforcing nothing.
+    Content-shape keywords keep their meaning and take precedence. Any other
+    non-empty name is treated as a reference into ``schemas`` and resolved by
+    name — an unknown name raises ``UnknownReferenceError`` (the same loud
+    contract tools/guardrails follow), so a manifest typo fails at compile time.
     """
-    if raw is None:
-        return None
-    key = raw.strip().lower()
-    if key in _IO_TEXT_SHAPES:
-        return None
-    shape = _IO_SHAPE_ALIASES.get(key)
-    if shape is None:
-        raise AgentCoreError(
-            f"io_schema shape '{raw}' is not recognized; expected one of: "
-            "text, json, json_object, json_array"
+    is_content_shape, shape = resolve_content_shape(raw)
+    if is_content_shape:
+        return shape
+    if schemas is None:
+        # Reached only if a CompiledAgent is constructed directly without a
+        # schema registry yet names a model side; the normal compile_agent path
+        # always passes registries.schemas.
+        raise UnknownReferenceError(
+            f"io_schema references schema '{raw}' but no schema registry was provided"
         )
-    return shape
+    return schemas.get(raw)
 
 
 def _validate_io_shape(field: str, shape: str, payload: str) -> None:
@@ -164,6 +154,44 @@ def _validate_io_shape(field: str, shape: str, payload: str) -> None:
         )
 
 
+def _validate_io_model(field: str, model: type[BaseModel], payload: str) -> None:
+    """Raise ``AgentCoreError`` if ``payload`` does not conform to ``model``.
+
+    The payload is parsed as JSON, then validated against the registered model.
+    Both the JSON parse failure and a schema mismatch name ``field`` ("input"
+    or "output") so the failing side of the contract is unambiguous; the API
+    maps the resulting ``AgentCoreError`` to a client/streamed error.
+    """
+    try:
+        parsed = json.loads(payload)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise AgentCoreError(
+            f"io_schema {field} must be valid JSON for schema "
+            f"'{model.__name__}', but it did not parse: {exc}"
+        ) from exc
+    try:
+        model.model_validate(parsed)
+    except ValidationError as exc:
+        raise AgentCoreError(
+            f"io_schema {field} does not conform to schema '{model.__name__}': {exc}"
+        ) from exc
+
+
+def _validate_io(field: str, constraint: _IOConstraint, payload: str) -> None:
+    """Enforce a resolved io_schema constraint over ``payload``.
+
+    Dispatches on the constraint kind: None is a no-op (no declaration or a
+    plain-text side), a string is a content-shape check, and a model type is a
+    Pydantic validation. Keeps the content-shape path byte-for-byte unchanged.
+    """
+    if constraint is None:
+        return
+    if isinstance(constraint, str):
+        _validate_io_shape(field, constraint, payload)
+    else:
+        _validate_io_model(field, constraint, payload)
+
+
 class CompiledAgent:
     """A manifest compiled into a runnable graph. Reusable across runs."""
 
@@ -176,6 +204,7 @@ class CompiledAgent:
         memory: MemoryProvider | None = None,
         checkpointer: CheckpointerArg = None,
         guardrails: list[Guardrail] | None = None,
+        schemas: Registry[type[BaseModel]] | None = None,
     ) -> None:
         self.manifest = manifest
         self._provider = provider
@@ -186,13 +215,19 @@ class CompiledAgent:
         # (the default for every manifest without a `guardrails` list) means
         # enforcement is skipped entirely and the run is unchanged.
         self._guardrails = guardrails or []
-        # Opt-in io_schema enforcement: canonical input/output shapes derived
-        # from the manifest, both None (no validation) unless the manifest
-        # declares a non-text `io_schema`. Normalized here so an unrecognized
-        # shape keyword fails fast at compile time, not on first run.
+        # Opt-in io_schema enforcement: resolved input/output constraints
+        # derived from the manifest, both None (no validation) unless the
+        # manifest declares a non-text `io_schema`. Each constraint is a
+        # content-shape string or a registered Pydantic model type. Resolved
+        # here so an unknown schema name fails fast at compile time, not on
+        # first run — the same loud contract tools/guardrails follow.
         io = manifest.io_schema
-        self._input_shape = _normalize_io_shape(io.input) if io is not None else None
-        self._output_shape = _normalize_io_shape(io.output) if io is not None else None
+        self._input_constraint = (
+            _resolve_io_constraint(io.input, schemas) if io is not None else None
+        )
+        self._output_constraint = (
+            _resolve_io_constraint(io.output, schemas) if io is not None else None
+        )
         # Opt-in durable checkpointer (Phase 5): None keeps the Phase 2
         # contract (each run starts fresh, no cross-run bleed). When set,
         # LangGraph persists state per `thread_id` so same-thread runs resume.
@@ -485,25 +520,26 @@ class CompiledAgent:
         return current, events
 
     def _validate_input(self, user_input: str) -> None:
-        """Enforce the declared input shape before the run starts.
+        """Enforce the declared input constraint before the run starts.
 
         No-op unless the manifest declared a non-text `io_schema.input`; on a
         mismatch raises ``AgentCoreError`` (the API maps this to a client error)
-        so a malformed request never reaches the model.
+        so a malformed request never reaches the model. The constraint is a
+        content-shape check or a registered Pydantic model validation.
         """
-        if self._input_shape is not None:
-            _validate_io_shape("input", self._input_shape, user_input)
+        _validate_io("input", self._input_constraint, user_input)
 
     def _validate_output(self, answer: str) -> None:
-        """Enforce the declared output shape on the final answer.
+        """Enforce the declared output constraint on the final answer.
 
-        Runs *after* guardrails (so the shape is checked on the text that will
-        actually be returned). No-op unless the manifest declared a non-text
-        `io_schema.output`; on a mismatch raises ``AgentCoreError`` rather than
-        letting a malformed answer be returned or streamed.
+        Runs *after* guardrails (so the constraint is checked on the text that
+        will actually be returned). No-op unless the manifest declared a
+        non-text `io_schema.output`; on a mismatch raises ``AgentCoreError``
+        rather than letting a malformed answer be returned or streamed. The
+        constraint is a content-shape check or a registered Pydantic model
+        validation.
         """
-        if self._output_shape is not None:
-            _validate_io_shape("output", self._output_shape, answer)
+        _validate_io("output", self._output_constraint, answer)
 
     # -- run APIs ----------------------------------------------------------- #
     async def arun(
@@ -581,7 +617,7 @@ class CompiledAgent:
         # output validation may reject it. Either way the final "answer" event
         # is only emitted once the answer is known-good. With neither, streaming
         # is unchanged: the answer flows out live during the loop.
-        hold_answer = bool(self._guardrails) or self._output_shape is not None
+        hold_answer = bool(self._guardrails) or self._output_constraint is not None
         # Live token streaming: only for a streaming-capable provider, and only
         # when the answer is NOT held back — a held answer is rewritten by
         # guardrails / validated by io_schema after the graph, so streaming its
@@ -838,4 +874,8 @@ def compile_agent(
         memory=memory,
         checkpointer=resolved_checkpointer,
         guardrails=guardrails,
+        # Named io_schema sides resolve against the shared schema registry; the
+        # content-shape keyword path never touches it, so no-io_schema and
+        # keyword-only manifests are unaffected.
+        schemas=registries.schemas,
     )

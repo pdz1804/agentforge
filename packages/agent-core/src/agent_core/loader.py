@@ -19,7 +19,7 @@ from pydantic import ValidationError
 
 from .errors import ManifestValidationError, UnknownReferenceError
 from .registry import Registries
-from .schema import AgentManifest
+from .schema import AgentManifest, resolve_content_shape
 
 
 def load_manifest_dict(data: dict[str, Any]) -> AgentManifest:
@@ -54,11 +54,15 @@ def resolve_manifest(
     is checked for ``sub_agents`` only when provided (sub-agent resolution needs
     the full set of manifest ids, which the caller supplies).
 
+    ``io_schema`` sides that are content-shape keywords (text/json/...) impose
+    no registry lookup; a side naming anything else is a Pydantic model
+    reference checked against ``registries.schemas`` here, so an unknown schema
+    name fails fast exactly like an unknown tool or guardrail.
+
     DEFERRED (not enforced in Phase 1, so do not treat these as validated):
     - ``sub_agents`` are only checked when ``known_agents`` is supplied; the
       single-manifest path (e.g. the validate endpoint) cannot resolve them yet.
       Multi-manifest resolution lands with the runtime in Phase 2.
-    - ``io_schema`` names are not resolved to Pydantic models yet (Phase 2).
     """
     missing: list[str] = []
 
@@ -77,6 +81,14 @@ def resolve_manifest(
             missing.append(f"guardrail '{guardrail}'")
     if manifest.memory and not registries.memory.has(manifest.memory.provider):
         missing.append(f"memory provider '{manifest.memory.provider}'")
+    if manifest.io_schema is not None:
+        # A named io_schema side (not a content-shape keyword) must resolve to a
+        # registered Pydantic model; content-shape keywords are skipped.
+        for side in ("input", "output"):
+            raw = getattr(manifest.io_schema, side)
+            is_content_shape, _ = resolve_content_shape(raw)
+            if not is_content_shape and not registries.schemas.has(raw):
+                missing.append(f"io_schema {side} schema '{raw}'")
     if known_agents is not None:
         for sub in manifest.sub_agents:
             if sub not in known_agents:
