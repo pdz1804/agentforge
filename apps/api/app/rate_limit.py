@@ -47,15 +47,38 @@ class _TokenBucket:
 # via reset_rate_limits() so one test's traffic never bleeds into another's.
 _buckets: dict[tuple[str, str], _TokenBucket] = {}
 
+# Bound the table so a long-lived process facing many distinct client IPs
+# can't grow it without limit. When exceeded, drop buckets untouched for a
+# full refill window (>60s) — those have refilled to capacity and are
+# indistinguishable from a fresh bucket, so forgetting them changes nothing.
+_MAX_TRACKED_BUCKETS = 10_000
+_IDLE_EVICT_SECONDS = 60.0
+
 
 def reset_rate_limits() -> None:
     """Test hook: clear all rate-limit state."""
     _buckets.clear()
 
 
+def _evict_idle() -> None:
+    now = time.monotonic()
+    for key in [k for k, b in _buckets.items() if now - b.updated_at > _IDLE_EVICT_SECONDS]:
+        del _buckets[key]
+
+
 def _limit_for(name: str) -> int:
     env_var = f"AGENTFORGE_RATE_LIMIT_{name.upper()}_PER_MIN"
-    return int(os.environ.get(env_var, _DEFAULT_LIMITS_PER_MINUTE[name]))
+    raw = os.environ.get(env_var)
+    default = _DEFAULT_LIMITS_PER_MINUTE[name]
+    if raw is None:
+        return default
+    # A non-numeric or non-positive override must not 500 every request on the
+    # hot path — fall back to the safe default instead.
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
 
 
 def _client_ip(request: Request) -> str:
@@ -70,6 +93,8 @@ def _make_dependency(name: str):
         # A changed env-configured limit (or a first hit) (re)creates the
         # bucket at full capacity for that new limit.
         if bucket is None or bucket.capacity != limit:
+            if bucket is None and len(_buckets) >= _MAX_TRACKED_BUCKETS:
+                _evict_idle()
             bucket = _TokenBucket(capacity=limit)
             _buckets[key] = bucket
         if not bucket.allow():

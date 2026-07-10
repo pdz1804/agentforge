@@ -88,7 +88,11 @@ export type DevHeldOutReport = {
 };
 
 // Regression shape varies by backend config; keep it open and render defensively.
+// The current backend (agent_core.eval.RegressionResult) reports `blocked`
+// (true = a regression that blocks promotion); passed/ok/regressed are
+// tolerated fallbacks for other builds.
 export type RegressionVerdict = {
+  blocked?: boolean;
   passed?: boolean;
   ok?: boolean;
   regressed?: boolean;

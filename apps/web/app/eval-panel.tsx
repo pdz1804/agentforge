@@ -120,9 +120,14 @@ function SplitCard({ report, held }: { report: SplitReport; held: boolean }) {
 }
 
 function RegressionBanner({ reg }: { reg: RegressionVerdict }) {
-  // Derive a headline verdict defensively from whatever boolean the backend set.
+  // Derive a headline verdict defensively. The backend's RegressionResult
+  // reports `blocked` (true = a real regression that blocks promotion), so a
+  // clean run is verdict=true (NO REGRESSION). Fall back to older/alternate
+  // boolean shapes if a different backend build ever sends them.
   const verdict =
-    reg.passed ?? reg.ok ?? (reg.regressed != null ? !reg.regressed : undefined);
+    typeof reg.blocked === "boolean"
+      ? !reg.blocked
+      : reg.passed ?? reg.ok ?? (reg.regressed != null ? !reg.regressed : undefined);
   const entries = Object.entries(reg).filter(
     ([, v]) => typeof v === "string" || typeof v === "number" || typeof v === "boolean",
   );

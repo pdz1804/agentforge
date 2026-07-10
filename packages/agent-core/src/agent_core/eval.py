@@ -424,7 +424,14 @@ async def run_task(agent: Any, task: EvalTask, judge_fn: JudgeFn | None) -> Task
         result = await agent.arun(task.input, eval_mode=True, thread_id=f"eval-{task.id}")
     except AgentCoreError as exc:
         return TaskScore(task_id=task.id, score=0.0, passed=False, detail=f"run error: {exc}")
-    return await score_task(task, result.answer or "", judge_fn)
+    # Scoring must be isolated too: a bad regex (score_programmatic), a
+    # non-numeric judge reply (_parse_judge_score), or a judge-provider failure
+    # raises out of score_task — and one malformed task must not abort the whole
+    # suite. Catch broadly here and record it as a clean 0/failed task.
+    try:
+        return await score_task(task, result.answer or "", judge_fn)
+    except Exception as exc:  # noqa: BLE001 — deliberate per-task isolation
+        return TaskScore(task_id=task.id, score=0.0, passed=False, detail=f"scoring error: {exc}")
 
 
 async def run_suite(

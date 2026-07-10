@@ -267,6 +267,39 @@ def test_evaluate_pair_rejects_manifest_id_mismatch():
         asyncio.run(evaluate_pair(manifest, registries, pair))
 
 
+def test_scoring_error_isolates_to_one_task_not_whole_suite():
+    # A single task whose scoring raises (here: an invalid regex) must score
+    # 0/failed and let the rest of the suite complete — one broken task must
+    # not abort the whole evaluation (per-task isolation contract).
+    registries = build_default_registries()
+    manifest = load_manifest_dict(_echo_manifest())
+    dev = _suite(
+        "echo.dev", "dev",
+        [
+            {"id": "ok", "input": "hello dev", "scoring_mode": "programmatic",
+             "match_type": "exact", "expected": "hello dev"},
+            {"id": "bad", "input": "x", "scoring_mode": "programmatic",
+             "match_type": "regex", "expected": "["},  # invalid regex -> score raises
+        ],
+    ).model_copy(update={"manifest_id": "echo_agent"})
+    held = _suite(
+        "echo.held_out", "held_out",
+        [
+            {"id": "h1", "input": "hello held out world", "scoring_mode": "programmatic",
+             "match_type": "exact", "expected": "hello held out world"},
+        ],
+    ).model_copy(update={"manifest_id": "echo_agent"})
+    pair = SuitePair(group_id="echo", manifest_id="echo_agent", dev=dev, held_out=held)
+
+    report = asyncio.run(evaluate_pair(manifest, registries, pair, measure_flake=False))
+
+    by_id = {s.task_id: s for s in report.dev.task_scores}
+    assert by_id["ok"].passed is True
+    assert by_id["bad"].passed is False
+    assert "scoring error" in (by_id["bad"].detail or "")
+    assert report.held_out.pass_rate == 1.0  # held-out still ran to completion
+
+
 # --------------------------------------------------------------------------- #
 # Regression gate
 # --------------------------------------------------------------------------- #

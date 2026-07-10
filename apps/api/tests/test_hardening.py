@@ -331,3 +331,87 @@ def test_redacting_log_filter_scrubs_log_record_message():
     )
     RedactingLogFilter().filter(record)
     assert "abcd1234secretvalue" not in record.getMessage()
+
+
+def test_redact_secrets_scrubs_bare_token_and_classic_base64_bearer():
+    # A bare `token=` field (auth_token/refresh_token/...) and a classic-base64
+    # bearer token (with +, /, =) must both be scrubbed — previously missed.
+    assert "9f3c8ba2e1d7aa11" not in redact_secrets("auth_token=9f3c8ba2e1d7aa11")
+    redacted = redact_secrets("Authorization: Bearer AbCd12ef+gh/JK90==")
+    assert "gh/JK90" not in redacted
+
+
+def test_redacting_log_filter_scrubs_exception_traceback():
+    # A secret in an exception repr is rendered by the formatter from exc_info,
+    # AFTER filters run — so the filter must pre-render + redact it into
+    # exc_text and clear exc_info (finding: tracebacks bypassed redaction).
+    import logging
+    import sys
+
+    try:
+        raise ValueError("boom with token=abcd1234secretvalue")
+    except ValueError:
+        record = logging.LogRecord(
+            name="test",
+            level=logging.ERROR,
+            pathname=__file__,
+            lineno=1,
+            msg="run failed",
+            args=(),
+            exc_info=sys.exc_info(),
+        )
+    RedactingLogFilter().filter(record)
+    assert record.exc_info is None
+    assert "abcd1234secretvalue" not in (record.exc_text or "")
+
+
+def test_persisted_run_trace_and_answer_are_redacted():
+    # Finding #1: redaction was applied only to the live SSE copy, so the
+    # durable store served secrets verbatim via GET /api/runs/{id} + /export.
+    from agent_core import ModelProvider, ModelResponse
+
+    from app.main import registries as app_registries
+
+    class _LeakyPersistProvider(ModelProvider):
+        provider = "hardening_leaky_persist"
+
+        async def complete(self, messages, tools=None, **cfg):
+            return ModelResponse(
+                text="here is the key: sk-persistabcdefghijklmnop",
+                usage={"input_tokens": 1, "output_tokens": 1},
+            )
+
+    if "hardening_leaky_persist" not in app_registries.models:
+        app_registries.models.register("hardening_leaky_persist", _LeakyPersistProvider())
+
+    resp = client.post(
+        "/api/runs",
+        json={
+            "manifest": {
+                "id": "leaky_persist_runner",
+                "model": {"provider": "hardening_leaky_persist", "name": "x"},
+                "prompt_ref": "prompts/echo_agent.md",
+                "tools": [],
+            },
+            "input": "leak it",
+        },
+    )
+    assert resp.status_code == 200
+    run_id = None
+    for frame in resp.text.split("\n\n"):
+        line = frame.strip()
+        if line.startswith("data:"):
+            payload = json.loads(line.removeprefix("data:").strip())
+            if payload.get("run_id"):
+                run_id = payload["run_id"]
+                break
+    assert run_id, "no run_id in the SSE stream"
+
+    got = client.get(f"/api/runs/{run_id}")
+    assert got.status_code == 200
+    assert "sk-persistabcdefghijklmnop" not in got.text
+    assert "[REDACTED]" in got.text
+
+    exported = client.get(f"/api/runs/{run_id}/export")
+    assert exported.status_code == 200
+    assert "sk-persistabcdefghijklmnop" not in exported.text

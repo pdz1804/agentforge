@@ -21,15 +21,16 @@ _PREFIXED_SECRET_PATTERNS = (
     re.compile(r"sk-ant-[A-Za-z0-9_-]{16,}"),
     re.compile(r"sk-[A-Za-z0-9_-]{16,}"),
     re.compile(r"tvly-[A-Za-z0-9_-]{16,}"),
-    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._-]{8,}"),
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._+/=-]{8,}"),
 )
 
 # `key=value` / `key: value` pairs whose key name looks secret-ish — catches
 # other providers' keys and ad-hoc "password"/"token" fields without needing
 # to know every vendor's key prefix. The value is redacted, the key name is
-# kept (useful for reading logs).
+# kept (useful for reading logs). A bare `token` alternative also covers
+# `auth_token`/`refresh_token`/`client_token` (matched at the `token=` tail).
 _KV_SECRET_PATTERN = re.compile(
-    r"(?i)((?:api[_-]?key|api[_-]?token|access[_-]?token|secret|password)['\"]?\s*[:=]\s*)"
+    r"(?i)((?:api[_-]?key|api[_-]?token|access[_-]?token|secret|password|token)['\"]?\s*[:=]\s*)"
     r"(['\"]?)([^\s'\",}]{4,})(\2)"
 )
 
@@ -58,4 +59,21 @@ class RedactingLogFilter(logging.Filter):
         # try to re-format the already-rendered message.
         record.msg = redact_secrets(record.getMessage())
         record.args = ()
+        # Exception tracebacks are rendered by the formatter from exc_info,
+        # AFTER filters run — so a key in an exception repr would bypass the
+        # message redaction above. Pre-render + redact the traceback here and
+        # stash it in exc_text (which the formatter prefers over exc_info),
+        # then clear exc_info so it isn't re-rendered raw. Same for stack_info.
+        if record.exc_info:
+            record.exc_text = _formatter.formatException(record.exc_info)
+            record.exc_info = None
+        if record.exc_text:
+            record.exc_text = redact_secrets(record.exc_text)
+        if record.stack_info:
+            record.stack_info = redact_secrets(record.stack_info)
         return True
+
+
+# Module-level formatter used only to pre-render exception tracebacks for
+# redaction (see RedactingLogFilter.filter). Stateless — safe to share.
+_formatter = logging.Formatter()

@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 import json
 import logging
@@ -79,7 +79,13 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 # Scrubs secrets (API keys, bearer tokens, ...) from every log record
 # process-wide, in case one ends up in an exception message (PRD Phase 11).
-logging.getLogger().addFilter(RedactingLogFilter())
+# The filter must sit on the HANDLERS, not the root logger: a logger's own
+# filters only run for records logged directly on it, so records propagated
+# up from named child loggers (logging.getLogger(__name__)) bypass a
+# root-logger filter but still pass through the root's handlers.
+_redacting_filter = RedactingLogFilter()
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(_redacting_filter)
 
 app = FastAPI(title="AgentForge API", version=core_version, lifespan=_lifespan)
 
@@ -142,7 +148,12 @@ class RunRequest(BaseModel):
     manifest: dict
     input: str
     eval_mode: bool = False
-    thread_id: str = "default"
+    # None => isolate this run under its own unique thread (the run id). A
+    # shared literal default would make LangGraph key every checkpointer-backed
+    # run to the SAME thread, so two clients that both omit thread_id would
+    # resume each other's conversation. Pass an explicit id ONLY to continue a
+    # prior thread on purpose.
+    thread_id: str | None = None
     agents: list[dict] = []  # sub-agent manifests the supervisor may delegate to
 
 
@@ -162,6 +173,9 @@ async def run_agent(req: RunRequest) -> StreamingResponse:
     async def event_stream():
         events: list = []
         answer: str | None = None
+        # Bound before the compile try so the finally can aclose it even if
+        # compilation failed. Stays None on the compile-error path.
+        agent = None
         # "incomplete" until a terminal event decides otherwise; "error" is set
         # only on a real failure (below), never as the default for a clean run.
         status = "incomplete"
@@ -177,6 +191,16 @@ async def run_agent(req: RunRequest) -> StreamingResponse:
             if persisted:
                 return cost
             persisted = True
+            # Redact before persisting, not only on the wire: the durable store
+            # is served verbatim by GET /api/runs/{id} and /export, so a secret
+            # a tool echoed into its output must be scrubbed here too — otherwise
+            # the live stream shows [REDACTED] while the system of record leaks
+            # the key. Round-trip each event through its JSON form so redaction
+            # reaches nested tool_calls/args, not just top-level detail strings.
+            redacted_events = [
+                type(e).model_validate_json(redact_secrets(e.model_dump_json()))
+                for e in events
+            ]
             await run_store.save(
                 RunRecord(
                     id=run_id,
@@ -184,8 +208,8 @@ async def run_agent(req: RunRequest) -> StreamingResponse:
                     model=model_name,
                     input=req.input,
                     status=status,
-                    answer=answer,
-                    trace=events,
+                    answer=redact_secrets(answer) if answer else answer,
+                    trace=redacted_events,
                     usage=usage,
                     cost_usd=cost,
                     created_at=created_at,
@@ -218,7 +242,7 @@ async def run_agent(req: RunRequest) -> StreamingResponse:
 
             try:
                 async for event in agent.astream(
-                    req.input, eval_mode=req.eval_mode, thread_id=req.thread_id
+                    req.input, eval_mode=req.eval_mode, thread_id=req.thread_id or run_id
                 ):
                     events.append(event)
                     if event.type == "answer":
@@ -247,6 +271,12 @@ async def run_agent(req: RunRequest) -> StreamingResponse:
             # Persist on every exit path, including client disconnect
             # (GeneratorExit) — awaiting is allowed here, only yielding is not.
             await persist()
+            # Release the per-run checkpointer's resources (sqlite connection +
+            # its background thread). A fresh agent is compiled per request, so
+            # without this every run with AGENTFORGE_CHECKPOINT_DB set would leak
+            # a connection/thread. No-op in the default no-checkpointer setup.
+            if agent is not None:
+                await agent.aclose()
 
     return StreamingResponse(
         event_stream(),
@@ -504,10 +534,17 @@ async def run_eval(req: EvalRequest) -> dict:
 
     body: dict = {"report": report.model_dump()}
     if req.baseline_held_out is not None:
-        baseline_held_out = EvalReport.model_validate(req.baseline_held_out)
-        baseline_dev = (
-            EvalReport.model_validate(req.baseline_dev) if req.baseline_dev is not None else None
-        )
+        # A malformed client-supplied baseline is a 422, not a 500 — validate
+        # inside the handler (this runs after the try/except above closes).
+        try:
+            baseline_held_out = EvalReport.model_validate(req.baseline_held_out)
+            baseline_dev = (
+                EvalReport.model_validate(req.baseline_dev)
+                if req.baseline_dev is not None
+                else None
+            )
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=f"invalid baseline report: {exc}") from exc
         regression = check_regression(
             report,
             baseline_held_out,

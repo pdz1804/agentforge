@@ -48,5 +48,10 @@ async def require_api_key(request: Request) -> None:
     if expected is None:
         return
     presented = _extract_presented_key(request)
-    if presented is None or not hmac.compare_digest(presented, expected):
+    # Compare as bytes: hmac.compare_digest raises TypeError on non-ASCII str
+    # (Starlette decodes headers as latin-1), which would surface as a 500
+    # instead of a clean 401 for a malformed key.
+    if presented is None or not hmac.compare_digest(
+        presented.encode("utf-8"), expected.encode("utf-8")
+    ):
         raise HTTPException(status_code=401, detail="missing or invalid API key")

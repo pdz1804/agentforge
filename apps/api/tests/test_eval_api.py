@@ -51,6 +51,22 @@ def test_eval_unknown_suite_id_is_404():
     assert resp.status_code == 404
 
 
+def test_eval_malformed_baseline_is_422_not_500():
+    # A valid run request but a client-supplied baseline of the wrong shape is
+    # bad input (422), not a server error (500).
+    resp = client.post(
+        "/api/eval",
+        json={
+            "manifest": _echo_manifest(),
+            "suite_id": "echo_agent",
+            "measure_flake": False,
+            "baseline_held_out": {"garbage": 1},
+        },
+    )
+    assert resp.status_code == 422
+    assert "baseline" in resp.json()["detail"].lower()
+
+
 def test_eval_with_inline_suites():
     dev_suite = {
         "id": "inline.dev", "manifest_id": "echo_agent", "split": "dev",
