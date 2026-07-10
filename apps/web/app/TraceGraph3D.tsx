@@ -334,6 +334,9 @@ const TYPE_PILL: Record<TraceEvent["type"], string> = {
   limit: "bad",
   error: "bad",
   done: "ok",
+  // token events are filtered out before reaching the graph/timeline (they
+  // stream into the answer, not the trace); mapped only for type exhaustiveness.
+  token: "info",
 };
 
 function TimelineScrubber({

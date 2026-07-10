@@ -73,15 +73,18 @@ def parse_openai_message(message: Any) -> tuple[str, list[ToolCall]]:
 
 class OpenAIModelProvider(ModelProvider):
     provider = "openai"
+    supports_token_streaming = True
 
     def __init__(self, model: str = "gpt-4o", api_key: str | None = None) -> None:
         self.model = model
         self._api_key = api_key
         self._client: Any = None
 
-    async def complete(
-        self, messages: list[Message], tools: list[BaseTool] | None = None, **cfg: Any
-    ) -> ModelResponse:
+    async def _prepare(
+        self, messages: list[Message], tools: list[BaseTool] | None, cfg: dict[str, Any]
+    ) -> tuple[Any, dict[str, Any]]:
+        """Resolve the key/client (lazily) and build the request kwargs shared
+        by the blocking and streaming code paths."""
         api_key = self._api_key or os.environ.get("OPENAI_API_KEY")
         if not api_key:
             raise AgentCoreError("OPENAI_API_KEY is not set; cannot call the OpenAI API")
@@ -104,8 +107,13 @@ class OpenAIModelProvider(ModelProvider):
         oai_tools = tools_to_openai(tools or [])
         if oai_tools:
             kwargs["tools"] = oai_tools
+        return self._client, kwargs
 
-        resp = await self._client.chat.completions.create(**kwargs)
+    async def complete(
+        self, messages: list[Message], tools: list[BaseTool] | None = None, **cfg: Any
+    ) -> ModelResponse:
+        client, kwargs = await self._prepare(messages, tools, cfg)
+        resp = await client.chat.completions.create(**kwargs)
         text, tool_calls = parse_openai_message(resp.choices[0].message)
         usage = {}
         if resp.usage:
@@ -114,3 +122,61 @@ class OpenAIModelProvider(ModelProvider):
                 "output_tokens": resp.usage.completion_tokens,
             }
         return ModelResponse(text=text, tool_calls=tool_calls, usage=usage)
+
+    async def astream_complete(
+        self,
+        messages: list[Message],
+        tools: list[BaseTool] | None = None,
+        *,
+        on_token: Any = None,
+        **cfg: Any,
+    ) -> ModelResponse:
+        """Server-sent streaming: emit each text delta via ``on_token`` as it
+        arrives, reassembling the same ``ModelResponse`` ``complete`` returns.
+
+        Tool-call fragments stream in pieces (a name in the first fragment, the
+        JSON arguments across later ones), keyed by ``index`` — they're
+        accumulated per index and parsed once the stream closes. Usage arrives
+        in a trailing chunk via ``stream_options.include_usage``.
+        """
+        client, kwargs = await self._prepare(messages, tools, cfg)
+        kwargs["stream"] = True
+        kwargs["stream_options"] = {"include_usage": True}
+
+        text_parts: list[str] = []
+        tc_acc: dict[int, dict[str, Any]] = {}
+        usage: dict[str, int] = {}
+        stream = await client.chat.completions.create(**kwargs)
+        async for chunk in stream:
+            if getattr(chunk, "usage", None):
+                usage = {
+                    "input_tokens": chunk.usage.prompt_tokens,
+                    "output_tokens": chunk.usage.completion_tokens,
+                }
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if getattr(delta, "content", None):
+                text_parts.append(delta.content)
+                if on_token is not None:
+                    on_token(delta.content)
+            for tcd in getattr(delta, "tool_calls", None) or []:
+                slot = tc_acc.setdefault(tcd.index, {"id": None, "name": "", "args": ""})
+                if getattr(tcd, "id", None):
+                    slot["id"] = tcd.id
+                fn = getattr(tcd, "function", None)
+                if fn is not None:
+                    if getattr(fn, "name", None):
+                        slot["name"] = fn.name
+                    if getattr(fn, "arguments", None):
+                        slot["args"] += fn.arguments
+
+        tool_calls: list[ToolCall] = []
+        for idx in sorted(tc_acc):
+            slot = tc_acc[idx]
+            try:
+                args = json.loads(slot["args"] or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            tool_calls.append(ToolCall(name=slot["name"] or "", args=args, id=slot["id"]))
+        return ModelResponse(text="".join(text_parts), tool_calls=tool_calls, usage=usage)

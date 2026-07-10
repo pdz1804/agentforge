@@ -13,7 +13,7 @@ function authHeaders(): Record<string, string> {
 
 export type TraceEvent = {
   step?: number;
-  type: "run_started" | "model" | "tool" | "answer" | "limit" | "error" | "done";
+  type: "run_started" | "model" | "tool" | "answer" | "limit" | "error" | "done" | "token";
   node?: string;
   detail?: string;
   tool_calls?: { name: string; args: Record<string, unknown>; id?: string }[];

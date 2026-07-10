@@ -11,6 +11,7 @@ without a redesign.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from enum import StrEnum
 from typing import Any
 
@@ -106,6 +107,11 @@ class ModelProvider(ABC):
     """
 
     provider: str
+    # Providers that deliver real server-sent token deltas set this True so the
+    # runtime streams tokens live for their runs; the default False keeps
+    # non-streaming providers (echo, and anything using the fallback below)
+    # byte-identical to before.
+    supports_token_streaming: bool = False
 
     @abstractmethod
     async def complete(
@@ -115,6 +121,28 @@ class ModelProvider(ABC):
         **cfg: Any,
     ) -> ModelResponse:
         raise NotImplementedError
+
+    async def astream_complete(
+        self,
+        messages: list[Message],
+        tools: list[BaseTool] | None = None,
+        *,
+        on_token: Callable[[str], None] | None = None,
+        **cfg: Any,
+    ) -> ModelResponse:
+        """Stream a completion, calling ``on_token`` with each text delta as it
+        arrives, then return the fully assembled ``ModelResponse``.
+
+        Default fallback for providers without native token streaming: run the
+        blocking ``complete`` and emit the whole text as one token. Providers
+        that support server-sent deltas (e.g. OpenAI) override this to deliver
+        real incremental tokens; the returned response is identical either way,
+        so callers that don't stream are unaffected.
+        """
+        resp = await self.complete(messages, tools, **cfg)
+        if on_token and resp.text:
+            on_token(resp.text)
+        return resp
 
 
 # --------------------------------------------------------------------------- #

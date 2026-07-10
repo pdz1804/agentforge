@@ -130,7 +130,15 @@ export default function Page() {
       await runAgent(
         { manifest, input, eval_mode: evalMode },
         (ev) => {
+          // Live token deltas fill the answer in real time; they are NOT added
+          // to the trace/graph (which show structural steps only).
+          if (ev.type === "token") {
+            setAnswer((prev) => (prev ?? "") + (ev.detail ?? ""));
+            return;
+          }
           setEvents((prev) => [...prev, ev]);
+          // The final "answer" event carries the authoritative full text
+          // (post-guardrails when applicable) — overwrite the streamed buffer.
           if (ev.type === "answer") setAnswer(ev.detail ?? "");
           if (ev.type === "error") {
             setRunError(ev.detail ?? "error");

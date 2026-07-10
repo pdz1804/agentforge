@@ -25,6 +25,7 @@ from typing import Annotated, Any, NamedTuple, TypedDict
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
@@ -61,7 +62,7 @@ class TraceEvent(BaseModel):
     """One observable step in a run (PRD Section 8.4 trace bus)."""
 
     step: int
-    type: str  # "model" | "tool" | "answer" | "limit" | "guardrail"
+    type: str  # "model" | "tool" | "answer" | "limit" | "guardrail" | "token"
     node: str
     detail: str = ""
     tool_calls: list[ToolCall] = Field(default_factory=list)
@@ -226,14 +227,30 @@ class CompiledAgent:
 
         async def agent_node(state: _RunState, config: RunnableConfig | None = None) -> dict:
             cfg = (config or {}).get("configurable", {})
-            resp = await self._provider.complete(
-                state["messages"],
+            step = state["steps"] + 1
+            call_kwargs = dict(
                 tools=list(self._tools.values()),
                 model=self.manifest.model.name,
                 temperature=cfg.get("temperature", self.manifest.model.temperature),
                 max_tokens=self.manifest.model.max_tokens,
             )
-            step = state["steps"] + 1
+            if cfg.get("stream_tokens"):
+                # Live token streaming (set only for astream runs on a streaming-
+                # capable provider without guardrails/output-schema). Emit each
+                # delta as a "token" trace event via LangGraph's custom stream
+                # writer so the UI fills the answer in real time; the assembled
+                # ModelResponse is identical to the blocking path.
+                writer = get_stream_writer()
+
+                def _on_token(delta: str) -> None:
+                    if delta and writer is not None:
+                        writer({"token": delta, "step": step, "node": "agent"})
+
+                resp = await self._provider.astream_complete(
+                    state["messages"], on_token=_on_token, **call_kwargs
+                )
+            else:
+                resp = await self._provider.complete(state["messages"], **call_kwargs)
             if resp.tool_calls:
                 # Ensure every tool call has a stable id so the assistant turn and
                 # the matching tool-result turn pair correctly for any provider
@@ -418,10 +435,17 @@ class CompiledAgent:
         except Exception:
             logger.debug("memory persist failed", exc_info=True)
 
-    def _config(self, eval_mode: bool, thread_id: str) -> dict:
+    def _config(self, eval_mode: bool, thread_id: str, stream_tokens: bool = False) -> dict:
         temperature = 0.0 if eval_mode else self.manifest.model.temperature
         return {
-            "configurable": {"thread_id": thread_id, "temperature": temperature},
+            "configurable": {
+                "thread_id": thread_id,
+                "temperature": temperature,
+                # Gates the agent node's live-token path. Only astream sets this
+                # True (and only for a streaming provider without guardrails/
+                # output-schema); arun and eval always leave it False.
+                "stream_tokens": stream_tokens,
+            },
             "recursion_limit": self.manifest.limits.max_steps * 2 + 5,
         }
 
@@ -558,8 +582,15 @@ class CompiledAgent:
         # is only emitted once the answer is known-good. With neither, streaming
         # is unchanged: the answer flows out live during the loop.
         hold_answer = bool(self._guardrails) or self._output_shape is not None
+        # Live token streaming: only for a streaming-capable provider, and only
+        # when the answer is NOT held back — a held answer is rewritten by
+        # guardrails / validated by io_schema after the graph, so streaming its
+        # raw tokens first would leak the pre-guardrail text. Eval never streams.
+        stream_tokens = (
+            self._provider.supports_token_streaming and not hold_answer and not eval_mode
+        )
         memories = await self._retrieve(user_input, eval_mode)
-        config = self._config(eval_mode, thread_id)
+        config = self._config(eval_mode, thread_id, stream_tokens=stream_tokens)
         include_system_prompt = True
         # See `arun`: eval mode always stays single-shot, even with a
         # checkpointer configured.
@@ -572,11 +603,28 @@ class CompiledAgent:
         token = _RUN_EVAL.set(eval_mode)
         try:
             async with asyncio.timeout(self.manifest.limits.wall_clock_s):
-                async for update in graph.astream(
+                # "updates" carries per-node trace events (as before); "custom"
+                # carries live token deltas written by the agent node. With a
+                # mode list LangGraph yields (mode, chunk) tuples.
+                stream_modes = ["updates", "custom"] if stream_tokens else "updates"
+                async for streamed in graph.astream(
                     self._initial_state(user_input, memories, include_system_prompt),
                     config,
-                    stream_mode="updates",
+                    stream_mode=stream_modes,
                 ):
+                    if stream_tokens:
+                        mode, chunk = streamed
+                        if mode == "custom":
+                            yield TraceEvent(
+                                step=int(chunk.get("step", last_step)),
+                                type="token",
+                                node=str(chunk.get("node", "agent")),
+                                detail=str(chunk.get("token", "")),
+                            )
+                            continue
+                        update = chunk
+                    else:
+                        update = streamed
                     for node_output in update.values():
                         if node_output.get("steps") is not None:
                             last_step = node_output["steps"]

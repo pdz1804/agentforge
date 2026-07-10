@@ -361,7 +361,11 @@ async def run_agent(req: RunRequest) -> StreamingResponse:
                 async for event in agent.astream(
                     req.input, eval_mode=req.eval_mode, thread_id=req.thread_id or run_id
                 ):
-                    events.append(event)
+                    # Live token deltas stream to the client but aren't persisted
+                    # (the final "answer" event carries the full text); keeping
+                    # them out of the stored trace avoids hundreds of rows/run.
+                    if event.type != "token":
+                        events.append(event)
                     if event.type == "answer":
                         answer, status = event.detail, "completed"
                     elif event.type == "limit":
