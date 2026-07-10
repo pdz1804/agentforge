@@ -1,7 +1,8 @@
-# Held-out split for "assistant_openai" (see assistant_openai.dev.yaml). Task
-# id + input are disjoint from the dev split.
-id: assistant_openai.held_out
-manifest_id: assistant_openai
+# Held-out split for the "assistant" template manifest (see assistant.dev.yaml).
+# Task id + input are disjoint from the dev split. manifest_id matches the
+# "assistant" builder template.
+id: assistant.held_out
+manifest_id: assistant
 split: held_out
 tasks:
   - id: held-1

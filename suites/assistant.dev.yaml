@@ -1,11 +1,12 @@
-# Optional live-model sample suite for the "assistant_openai" manifest
+# Optional live-model sample suite for the "assistant" template manifest
 # (model.provider="openai", prompt_ref="prompts/assistant.md"). Demonstrates
 # llm_judge scoring; NOT exercised by the automated test suite because
 # running it needs OPENAI_API_KEY and makes a real network call to the judge
-# model. Run manually via POST /api/eval with suite_id="assistant_openai" once
-# a key is configured.
-id: assistant_openai.dev
-manifest_id: assistant_openai
+# model. Run manually via POST /api/eval with suite_id="assistant" once a key
+# is configured. manifest_id matches the "assistant" builder template so the
+# eval runs against it without an id mismatch.
+id: assistant.dev
+manifest_id: assistant
 split: dev
 tasks:
   - id: dev-1
