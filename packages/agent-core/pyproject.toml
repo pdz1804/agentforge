@@ -6,6 +6,20 @@ build-backend = "setuptools.build_meta"
 name = "agent-core"
 version = "0.1.0"
 description = "Unified Agent Core — declarative agent manifests, pluggable registries, and interfaces for the AgentForge harness."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "pdz1804" }]
+keywords = ["agents", "llm", "langgraph", "agent-framework", "ai", "openai", "anthropic"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.6",
@@ -22,6 +36,12 @@ openai = ["openai>=1.40"]
 mem0 = ["mem0ai>=0.1"]
 mcp = ["mcp>=1.0"]
 dev = ["pytest>=8.0"]
+
+[project.urls]
+Homepage = "https://github.com/pdz1804/agentforge"
+Repository = "https://github.com/pdz1804/agentforge"
+Documentation = "https://github.com/pdz1804/agentforge/tree/main/docs"
+Issues = "https://github.com/pdz1804/agentforge/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
