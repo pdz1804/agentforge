@@ -57,19 +57,24 @@ class RunRecord(BaseModel):
     usage: dict[str, int] = Field(default_factory=dict)
     cost_usd: float = 0.0
     created_at: str = ""
+    # Per-user data isolation scaffold (additive). "public" is the same
+    # sentinel `apps/api/app/auth.py` uses for DEFAULT_USER — every row
+    # defaults to it, so unscoped reads (owner=None) and existing callers that
+    # never pass owner are completely unaffected.
+    owner: str = "public"
 
 
 class RunStore(ABC):
     @abstractmethod
-    async def save(self, record: RunRecord) -> None:
+    async def save(self, record: RunRecord, owner: str = "public") -> None:
         raise NotImplementedError
 
     @abstractmethod
-    async def get(self, run_id: str) -> RunRecord | None:
+    async def get(self, run_id: str, owner: str | None = None) -> RunRecord | None:
         raise NotImplementedError
 
     @abstractmethod
-    async def list(self, limit: int = 50) -> list[RunRecord]:
+    async def list(self, limit: int = 50, owner: str | None = None) -> list[RunRecord]:
         raise NotImplementedError
 
 
@@ -81,20 +86,37 @@ class InMemoryRunStore(RunStore):
         self._order: list[str] = []
         self._max = max_runs
 
-    async def save(self, record: RunRecord) -> None:
+    async def save(self, record: RunRecord, owner: str = "public") -> None:
+        # `owner` (not `record.owner`) is the authoritative value stamped on
+        # the row — mirrors the write-path contract of the other two stores,
+        # where the caller passes the record's fields plus owner separately.
+        record = record.model_copy(update={"owner": owner})
         if record.id not in self._runs:
             self._order.append(record.id)
         self._runs[record.id] = record
         while len(self._order) > self._max:
             self._runs.pop(self._order.pop(0), None)
 
-    async def get(self, run_id: str) -> RunRecord | None:
-        return self._runs.get(run_id)
+    async def get(self, run_id: str, owner: str | None = None) -> RunRecord | None:
+        record = self._runs.get(run_id)
+        if record is None:
+            return None
+        if owner is not None and record.owner != owner:
+            return None
+        return record
 
-    async def list(self, limit: int = 50) -> list[RunRecord]:
+    async def list(self, limit: int = 50, owner: str | None = None) -> list[RunRecord]:
         if limit <= 0:  # guard: -0 slices to the whole list, negatives mis-window
             return []
-        return [self._runs[i] for i in reversed(self._order[-limit:])]
+        out: list[RunRecord] = []
+        for run_id in reversed(self._order):
+            record = self._runs[run_id]
+            if owner is not None and record.owner != owner:
+                continue
+            out.append(record)
+            if len(out) >= limit:
+                break
+        return out
 
 
 # --------------------------------------------------------------------------- #
@@ -160,10 +182,18 @@ CREATE TABLE IF NOT EXISTS runs (
     usage JSONB NOT NULL,
     cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
-    inserted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    inserted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    owner TEXT NOT NULL DEFAULT 'public'
 )
 """
 _CREATE_INDEX_SQL = "CREATE INDEX IF NOT EXISTS runs_inserted_at_idx ON runs (inserted_at DESC)"
+# Idempotent migration for a table created before the per-user scaffold: a
+# pre-existing `runs` table gains the `owner` column (defaulted to the
+# single-user sentinel) without any data loss or downtime.
+_ALTER_TABLE_ADD_OWNER_SQL = (
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS owner TEXT NOT NULL DEFAULT 'public'"
+)
+_CREATE_OWNER_INDEX_SQL = "CREATE INDEX IF NOT EXISTS runs_owner_idx ON runs (owner)"
 
 
 class PostgresRunStore(RunStore):
@@ -191,10 +221,14 @@ class PostgresRunStore(RunStore):
                 async with pool.acquire() as conn:
                     await conn.execute(_CREATE_TABLE_SQL)
                     await conn.execute(_CREATE_INDEX_SQL)
+                    # Idempotent: no-op on a fresh table (column already exists
+                    # from _CREATE_TABLE_SQL) and safe to re-run every startup.
+                    await conn.execute(_ALTER_TABLE_ADD_OWNER_SQL)
+                    await conn.execute(_CREATE_OWNER_INDEX_SQL)
                 self._pool = pool
         return self._pool
 
-    async def save(self, record: RunRecord) -> None:
+    async def save(self, record: RunRecord, owner: str = "public") -> None:
         pool = await self._ensure_pool()
         trace, sampled = truncate_trace(record.trace, self._max_trace_events)
         if sampled:
@@ -211,8 +245,8 @@ class PostgresRunStore(RunStore):
                 """
                 INSERT INTO runs
                     (id, manifest_id, model, input, status, answer,
-                     trace, usage, cost_usd, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10)
+                     trace, usage, cost_usd, created_at, owner)
+                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11)
                 ON CONFLICT (id) DO UPDATE SET
                     manifest_id = EXCLUDED.manifest_id,
                     model = EXCLUDED.model,
@@ -222,7 +256,8 @@ class PostgresRunStore(RunStore):
                     trace = EXCLUDED.trace,
                     usage = EXCLUDED.usage,
                     cost_usd = EXCLUDED.cost_usd,
-                    created_at = EXCLUDED.created_at
+                    created_at = EXCLUDED.created_at,
+                    owner = EXCLUDED.owner
                 """,
                 record.id,
                 record.manifest_id,
@@ -234,22 +269,35 @@ class PostgresRunStore(RunStore):
                 usage_json,
                 record.cost_usd,
                 record.created_at,
+                owner,
             )
 
-    async def get(self, run_id: str) -> RunRecord | None:
+    async def get(self, run_id: str, owner: str | None = None) -> RunRecord | None:
         pool = await self._ensure_pool()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT * FROM runs WHERE id = $1", run_id)
+            if owner is None:
+                row = await conn.fetchrow("SELECT * FROM runs WHERE id = $1", run_id)
+            else:
+                row = await conn.fetchrow(
+                    "SELECT * FROM runs WHERE id = $1 AND owner = $2", run_id, owner
+                )
         return self._row_to_record(row) if row is not None else None
 
-    async def list(self, limit: int = 50) -> list[RunRecord]:
+    async def list(self, limit: int = 50, owner: str | None = None) -> list[RunRecord]:
         if limit <= 0:  # guard: matches InMemoryRunStore's -0/negative behavior
             return []
         pool = await self._ensure_pool()
         async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT * FROM runs ORDER BY inserted_at DESC LIMIT $1", limit
-            )
+            if owner is None:
+                rows = await conn.fetch(
+                    "SELECT * FROM runs ORDER BY inserted_at DESC LIMIT $1", limit
+                )
+            else:
+                rows = await conn.fetch(
+                    "SELECT * FROM runs WHERE owner = $1 ORDER BY inserted_at DESC LIMIT $2",
+                    owner,
+                    limit,
+                )
         return [self._row_to_record(r) for r in rows]
 
     async def prune(
@@ -296,6 +344,9 @@ class PostgresRunStore(RunStore):
             usage=json.loads(row["usage"]),
             cost_usd=row["cost_usd"],
             created_at=row["created_at"],
+            # Always present: `_ensure_pool` runs the idempotent ADD COLUMN
+            # migration before any query can reach this method.
+            owner=row["owner"],
         )
 
 

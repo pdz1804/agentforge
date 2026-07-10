@@ -11,6 +11,14 @@ memory, index) sit behind `require_api_key`, a no-op unless
 unaffected by default. `/api/runs`, `/api/eval`, and `/api/sandbox/exec` are
 additionally per-IP rate limited, and secrets are redacted from the run
 trace/error stream and from all log output.
+
+Also additive (this phase — per-user auth SCAFFOLD + data isolation, backend
+only, no login UI/OAuth): stateful endpoints additionally depend on
+`resolve_user` (see auth.py) and scope their store reads/writes to the
+resolved user id. `AGENTFORGE_JWT_SECRET` unset (the default) resolves every
+caller to the same `DEFAULT_USER` ("public") every row already defaults to,
+so this is a no-op for the existing single-user deployment. Setting the
+secret turns on real per-user isolation gated by a bearer JWT.
 """
 
 from __future__ import annotations
@@ -32,7 +40,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from app.auth import require_api_key
+from app.auth import DEFAULT_USER, issue_token, require_api_key, resolve_user
 from app.env_loader import load_env_files
 from app.rate_limit import eval_rate_limit, runs_rate_limit, sandbox_rate_limit
 from app.redaction import RedactingLogFilter, redact_secrets
@@ -144,6 +152,39 @@ def list_tools() -> dict:
     return {"tools": registries.tools.list()}
 
 
+# --------------------------------------------------------------------------- #
+# Per-user auth scaffold (this phase): backend-only user resolution + data
+# isolation. NOT a login system — there is no signup/password/session flow.
+# `POST /api/auth/token` is a DEV SCAFFOLD that mints a JWT for any user id
+# the caller names, gated only by the existing shared API key; a real
+# login/OAuth flow (verifying who the caller actually is) replaces this
+# endpoint before any of this reaches end users. See auth.py for the JWT
+# read/verify path used by every other endpoint via `resolve_user`.
+# --------------------------------------------------------------------------- #
+class TokenRequest(BaseModel):
+    user_id: str
+
+
+@app.post("/api/auth/token", dependencies=[Depends(require_api_key)])
+def issue_auth_token(req: TokenRequest) -> dict:
+    """Mint a dev-scaffold bearer token for ``user_id``.
+
+    501 when `AGENTFORGE_JWT_SECRET` is unset — per-user auth is off, so
+    there is nothing to issue a token for. Requires the shared API key (when
+    one is configured) so minting isn't wide open even while it's a scaffold.
+    """
+    try:
+        token = issue_token(req.user_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    return {"access_token": token, "token_type": "bearer"}
+
+
+@app.get("/api/auth/me")
+def whoami(user: str = Depends(resolve_user)) -> dict:
+    return {"user_id": user}
+
+
 class ValidateRequest(BaseModel):
     manifest: dict
 
@@ -190,38 +231,55 @@ def _validate_manifest_or_400(raw: dict):
     return manifest
 
 
+async def _ensure_creatable_or_404(manifest_id: str, user: str) -> None:
+    """Block creating/updating a manifest id another user already owns.
+
+    A brand-new id (no versions at all) is always creatable. An id with
+    existing versions owned by someone else 404s rather than 403 — same
+    "don't reveal existence to a non-owner" posture as the read paths below.
+    """
+    existing = await manifest_store.list_versions(manifest_id)  # unscoped: any owner
+    if existing and existing[-1].owner != user:
+        raise HTTPException(status_code=404, detail="agent (or version) not found")
+
+
 @app.post("/api/agents", dependencies=[Depends(require_api_key)])
-async def create_agent(req: ManifestRequest) -> dict:
+async def create_agent(req: ManifestRequest, user: str = Depends(resolve_user)) -> dict:
     """Validate a manifest and store it as a new version (v1 for a new id)."""
     manifest = _validate_manifest_or_400(req.manifest)
+    await _ensure_creatable_or_404(manifest.id, user)
     created_at = datetime.now(timezone.utc).isoformat()
-    record = await manifest_store.save(manifest.id, req.manifest, created_at=created_at)
+    record = await manifest_store.save(manifest.id, req.manifest, created_at=created_at, owner=user)
     return record.model_dump()
 
 
 @app.get("/api/agents", dependencies=[Depends(require_api_key)])
-async def list_agents() -> dict:
-    """List stored manifest ids with their current (latest) version number."""
-    ids = await manifest_store.list_ids()
+async def list_agents(user: str = Depends(resolve_user)) -> dict:
+    """List stored manifest ids (owned by the caller) with their latest version."""
+    ids = await manifest_store.list_ids(owner=user)
     agents = []
     for manifest_id in ids:
-        latest = await manifest_store.get(manifest_id)
+        latest = await manifest_store.get(manifest_id, owner=user)
         if latest is not None:
             agents.append({"id": manifest_id, "latest_version": latest.version})
     return {"agents": agents}
 
 
 @app.get("/api/agents/{manifest_id}", dependencies=[Depends(require_api_key)])
-async def get_agent(manifest_id: str, version: int | None = None) -> dict:
+async def get_agent(
+    manifest_id: str, version: int | None = None, user: str = Depends(resolve_user)
+) -> dict:
     """Fetch the latest stored version, or a specific one via ``?version=N``."""
-    record = await manifest_store.get(manifest_id, version)
+    record = await manifest_store.get(manifest_id, version, owner=user)
     if record is None:
         raise HTTPException(status_code=404, detail="agent (or version) not found")
     return record.model_dump()
 
 
 @app.put("/api/agents/{manifest_id}", dependencies=[Depends(require_api_key)])
-async def update_agent(manifest_id: str, req: ManifestRequest) -> dict:
+async def update_agent(
+    manifest_id: str, req: ManifestRequest, user: str = Depends(resolve_user)
+) -> dict:
     """Validate and store a new version of ``manifest_id``.
 
     The manifest body's own ``id`` must match the path id — storing a manifest
@@ -233,15 +291,16 @@ async def update_agent(manifest_id: str, req: ManifestRequest) -> dict:
             status_code=400,
             detail=f"manifest id '{manifest.id}' does not match path id '{manifest_id}'",
         )
+    await _ensure_creatable_or_404(manifest_id, user)
     created_at = datetime.now(timezone.utc).isoformat()
-    record = await manifest_store.save(manifest_id, req.manifest, created_at=created_at)
+    record = await manifest_store.save(manifest_id, req.manifest, created_at=created_at, owner=user)
     return record.model_dump()
 
 
 @app.get("/api/agents/{manifest_id}/versions", dependencies=[Depends(require_api_key)])
-async def list_agent_versions(manifest_id: str) -> dict:
+async def list_agent_versions(manifest_id: str, user: str = Depends(resolve_user)) -> dict:
     """Return the full version history for ``manifest_id`` (oldest first)."""
-    versions = await manifest_store.list_versions(manifest_id)
+    versions = await manifest_store.list_versions(manifest_id, owner=user)
     if not versions:
         raise HTTPException(status_code=404, detail="agent not found")
     return {"manifest_id": manifest_id, "versions": [v.model_dump() for v in versions]}
@@ -252,10 +311,11 @@ async def diff_agent_versions(
     manifest_id: str,
     from_: int = Query(..., alias="from"),  # 'from' is a Python keyword; alias the query param
     to: int = Query(...),
+    user: str = Depends(resolve_user),
 ) -> dict:
     """Field + unified-text diff between two stored versions (``?from=&to=``)."""
-    older = await manifest_store.get(manifest_id, from_)
-    newer = await manifest_store.get(manifest_id, to)
+    older = await manifest_store.get(manifest_id, from_, owner=user)
+    newer = await manifest_store.get(manifest_id, to, owner=user)
     if older is None or newer is None:
         raise HTTPException(status_code=404, detail="agent (or version) not found")
     return diff_manifest_versions(older, newer)
@@ -275,7 +335,7 @@ class RunRequest(BaseModel):
 
 
 @app.post("/api/runs", dependencies=[Depends(require_api_key), Depends(runs_rate_limit)])
-async def run_agent(req: RunRequest) -> StreamingResponse:
+async def run_agent(req: RunRequest, user: str = Depends(resolve_user)) -> StreamingResponse:
     """Run an agent, streaming trace events as Server-Sent Events.
 
     Validation errors are streamed as a single ``error`` event rather than an
@@ -330,7 +390,8 @@ async def run_agent(req: RunRequest) -> StreamingResponse:
                     usage=usage,
                     cost_usd=cost,
                     created_at=created_at,
-                )
+                ),
+                owner=user,
             )
             return cost
 
@@ -416,8 +477,8 @@ async def run_agent(req: RunRequest) -> StreamingResponse:
 # require_api_key like the other sensitive endpoints (no-op unless
 # AGENTFORGE_API_KEY is set).
 @app.get("/api/runs", dependencies=[Depends(require_api_key)])
-async def runs_list(limit: int = 50) -> dict:
-    records = await run_store.list(limit)
+async def runs_list(limit: int = 50, user: str = Depends(resolve_user)) -> dict:
+    records = await run_store.list(limit, owner=user)
     return {
         "runs": [
             {
@@ -435,16 +496,16 @@ async def runs_list(limit: int = 50) -> dict:
 
 
 @app.get("/api/runs/{run_id}", dependencies=[Depends(require_api_key)])
-async def runs_get(run_id: str) -> dict:
-    record = await run_store.get(run_id)
+async def runs_get(run_id: str, user: str = Depends(resolve_user)) -> dict:
+    record = await run_store.get(run_id, owner=user)
     if record is None:
         raise HTTPException(status_code=404, detail="run not found")
     return record.model_dump()
 
 
 @app.get("/api/runs/{run_id}/export", dependencies=[Depends(require_api_key)])
-async def runs_export(run_id: str) -> dict:
-    record = await run_store.get(run_id)
+async def runs_export(run_id: str, user: str = Depends(resolve_user)) -> dict:
+    record = await run_store.get(run_id, owner=user)
     if record is None:
         raise HTTPException(status_code=404, detail="run not found")
     return record.model_dump()  # full trace, JSON
@@ -496,6 +557,16 @@ def _scope(value: str) -> Scope:
         raise HTTPException(status_code=400, detail=f"invalid scope '{value}'") from None
 
 
+def _user_namespace(user: str, namespace: str) -> str:
+    """Derive the effective memory namespace, isolating buckets per user.
+
+    ``DEFAULT_USER`` ("public") is left unprefixed so the default (auth off)
+    path is byte-for-byte the existing single-user namespace — this only
+    changes behavior once a caller resolves to a real, non-default user id.
+    """
+    return namespace if user == DEFAULT_USER else f"{user}:{namespace}"
+
+
 class MemoryAddRequest(BaseModel):
     text: str
     provider: str = "in_memory"
@@ -505,24 +576,29 @@ class MemoryAddRequest(BaseModel):
 
 # The memory endpoints honor caller-supplied scope/namespace — a caller can
 # read/delete any bucket — so they sit behind require_api_key like the other
-# sensitive endpoints (no-op unless AGENTFORGE_API_KEY is set).
+# sensitive endpoints (no-op unless AGENTFORGE_API_KEY is set). The namespace
+# is additionally prefixed per resolved user (see _user_namespace) so two
+# users' "default" buckets never collide once per-user auth is turned on.
 @app.get("/api/memory", dependencies=[Depends(require_api_key)])
 async def memory_list(
     provider: str = "in_memory",
     scope: str = "user",
     namespace: str = "default",
     query: str | None = None,
+    user: str = Depends(resolve_user),
 ) -> dict:
     prov = _memory_provider(provider)
     sc = _scope(scope)
-    items = await (prov.search(sc, namespace, query, 20) if query else prov.all(sc, namespace))
+    ns = _user_namespace(user, namespace)
+    items = await (prov.search(sc, ns, query, 20) if query else prov.all(sc, ns))
     return {"items": [i.model_dump() for i in items]}
 
 
 @app.post("/api/memory", dependencies=[Depends(require_api_key)])
-async def memory_add(req: MemoryAddRequest) -> dict:
+async def memory_add(req: MemoryAddRequest, user: str = Depends(resolve_user)) -> dict:
     prov = _memory_provider(req.provider)
-    await prov.add(_scope(req.scope), req.namespace, [MemoryItem(text=req.text)])
+    ns = _user_namespace(user, req.namespace)
+    await prov.add(_scope(req.scope), ns, [MemoryItem(text=req.text)])
     return {"ok": True}
 
 
@@ -532,9 +608,11 @@ async def memory_delete(
     provider: str = "in_memory",
     scope: str = "user",
     namespace: str = "default",
+    user: str = Depends(resolve_user),
 ) -> dict:
     prov = _memory_provider(provider)
-    await prov.delete(_scope(scope), namespace, [id])
+    ns = _user_namespace(user, namespace)
+    await prov.delete(_scope(scope), ns, [id])
     return {"ok": True}
 
 
@@ -612,7 +690,7 @@ class EvalRequest(BaseModel):
     "/api/eval",
     dependencies=[Depends(require_api_key), Depends(eval_rate_limit)],
 )
-async def run_eval(req: EvalRequest) -> dict:
+async def run_eval(req: EvalRequest, user: str = Depends(resolve_user)) -> dict:
     """Run a manifest's dev + held-out suites and return the side-by-side report.
 
     Reuses the same compile/resolve path as ``/api/runs``; each task runs in
@@ -661,7 +739,7 @@ async def run_eval(req: EvalRequest) -> dict:
     # a baseline (Gap G5). The generated id is returned to the caller.
     report_id = uuid.uuid4().hex
     await eval_report_store.save_report(
-        report_id, report, created_at=datetime.now(timezone.utc).isoformat()
+        report_id, report, created_at=datetime.now(timezone.utc).isoformat(), owner=user
     )
     # Capture llm_judge-scored tasks for periodic human audit (PRD 14.2). Stored
     # separately from the report, so a run with no judge tasks records an empty
@@ -690,7 +768,7 @@ async def run_eval(req: EvalRequest) -> dict:
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail=f"invalid baseline report: {exc}") from exc
     elif req.use_stored_baseline:
-        stored = await eval_report_store.get_baseline(manifest.id)
+        stored = await eval_report_store.get_baseline(manifest.id, owner=user)
         if stored is None:
             raise HTTPException(
                 status_code=404,
@@ -711,23 +789,23 @@ async def run_eval(req: EvalRequest) -> dict:
 
 
 @app.get("/api/eval/{report_id}", dependencies=[Depends(require_api_key)])
-async def get_eval_report(report_id: str) -> dict:
+async def get_eval_report(report_id: str, user: str = Depends(resolve_user)) -> dict:
     """Fetch a previously stored eval report by its id (Gap G5)."""
-    stored = await eval_report_store.get_report(report_id)
+    stored = await eval_report_store.get_report(report_id, owner=user)
     if stored is None:
         raise HTTPException(status_code=404, detail="eval report not found")
     return stored.model_dump()
 
 
 @app.get("/api/eval/{report_id}/spot-check", dependencies=[Depends(require_api_key)])
-async def get_eval_spot_check(report_id: str) -> dict:
+async def get_eval_spot_check(report_id: str, user: str = Depends(resolve_user)) -> dict:
     """List a stored report's llm_judge samples queued for human audit (PRD 14.2).
 
     Read-only: surfaces each judged task's input, agent answer, and the judge's
     raw score/verdict so a human can periodically re-check the judge. Reports
     with no llm_judge tasks return an empty ``samples`` list.
     """
-    stored = await eval_report_store.get_report(report_id)
+    stored = await eval_report_store.get_report(report_id, owner=user)
     if stored is None:
         raise HTTPException(status_code=404, detail="eval report not found")
     samples = await eval_report_store.get_spot_check(report_id)
@@ -739,13 +817,13 @@ async def get_eval_spot_check(report_id: str) -> dict:
 
 
 @app.post("/api/eval/{report_id}/promote", dependencies=[Depends(require_api_key)])
-async def promote_eval_baseline(report_id: str) -> dict:
+async def promote_eval_baseline(report_id: str, user: str = Depends(resolve_user)) -> dict:
     """Promote a stored report's held-out split to its manifest's baseline.
 
     After this, an eval run for the same manifest can gate against the stored
     baseline via ``use_stored_baseline`` instead of shipping one inline.
     """
-    stored = await eval_report_store.get_report(report_id)
+    stored = await eval_report_store.get_report(report_id, owner=user)
     if stored is None:
         raise HTTPException(status_code=404, detail="eval report not found")
     baseline = StoredBaseline(
@@ -755,7 +833,7 @@ async def promote_eval_baseline(report_id: str) -> dict:
         source_report_id=report_id,
         created_at=datetime.now(timezone.utc).isoformat(),
     )
-    await eval_report_store.set_baseline(baseline)
+    await eval_report_store.set_baseline(baseline, owner=user)
     return {
         "manifest_id": stored.manifest_id,
         "source_report_id": report_id,

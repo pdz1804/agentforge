@@ -33,6 +33,9 @@ class StoredEvalReport(BaseModel):
     manifest_id: str
     report: DevHeldOutReport
     created_at: str = ""
+    # Per-user data isolation scaffold (additive) — see RunRecord.owner in
+    # observability.py for the full rationale; same "public" sentinel.
+    owner: str = "public"
 
 
 class StoredBaseline(BaseModel):
@@ -48,26 +51,31 @@ class StoredBaseline(BaseModel):
     dev: EvalReport | None = None
     source_report_id: str | None = None
     created_at: str = ""
+    owner: str = "public"
 
 
 class EvalReportStore(ABC):
     @abstractmethod
     async def save_report(
-        self, report_id: str, report: DevHeldOutReport, created_at: str = ""
+        self, report_id: str, report: DevHeldOutReport, created_at: str = "", owner: str = "public"
     ) -> StoredEvalReport:
         raise NotImplementedError
 
     @abstractmethod
-    async def get_report(self, report_id: str) -> StoredEvalReport | None:
+    async def get_report(
+        self, report_id: str, owner: str | None = None
+    ) -> StoredEvalReport | None:
         raise NotImplementedError
 
     @abstractmethod
-    async def set_baseline(self, baseline: StoredBaseline) -> None:
+    async def set_baseline(self, baseline: StoredBaseline, owner: str = "public") -> None:
         """Store (replacing any existing) the regression baseline for a manifest."""
         raise NotImplementedError
 
     @abstractmethod
-    async def get_baseline(self, manifest_id: str) -> StoredBaseline | None:
+    async def get_baseline(
+        self, manifest_id: str, owner: str | None = None
+    ) -> StoredBaseline | None:
         raise NotImplementedError
 
     @abstractmethod
@@ -98,25 +106,40 @@ class InMemoryEvalReportStore(EvalReportStore):
         self._spot_checks: dict[str, list[SpotCheckSample]] = {}
 
     async def save_report(
-        self, report_id: str, report: DevHeldOutReport, created_at: str = ""
+        self, report_id: str, report: DevHeldOutReport, created_at: str = "", owner: str = "public"
     ) -> StoredEvalReport:
         stored = StoredEvalReport(
             id=report_id,
             manifest_id=report.manifest_id,
             report=report,
             created_at=created_at,
+            owner=owner,
         )
         self._reports[report_id] = stored
         return stored
 
-    async def get_report(self, report_id: str) -> StoredEvalReport | None:
-        return self._reports.get(report_id)
+    async def get_report(
+        self, report_id: str, owner: str | None = None
+    ) -> StoredEvalReport | None:
+        stored = self._reports.get(report_id)
+        if stored is None:
+            return None
+        if owner is not None and stored.owner != owner:
+            return None
+        return stored
 
-    async def set_baseline(self, baseline: StoredBaseline) -> None:
-        self._baselines[baseline.manifest_id] = baseline
+    async def set_baseline(self, baseline: StoredBaseline, owner: str = "public") -> None:
+        self._baselines[baseline.manifest_id] = baseline.model_copy(update={"owner": owner})
 
-    async def get_baseline(self, manifest_id: str) -> StoredBaseline | None:
-        return self._baselines.get(manifest_id)
+    async def get_baseline(
+        self, manifest_id: str, owner: str | None = None
+    ) -> StoredBaseline | None:
+        stored = self._baselines.get(manifest_id)
+        if stored is None:
+            return None
+        if owner is not None and stored.owner != owner:
+            return None
+        return stored
 
     async def save_spot_check(self, report_id: str, samples: list[SpotCheckSample]) -> None:
         self._spot_checks[report_id] = list(samples)

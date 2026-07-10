@@ -37,11 +37,16 @@ class ManifestVersion(BaseModel):
     version: int
     manifest: dict
     created_at: str = ""
+    # Per-user data isolation scaffold (additive) — see RunRecord.owner in
+    # observability.py for the full rationale; same "public" sentinel.
+    owner: str = "public"
 
 
 class ManifestStore(ABC):
     @abstractmethod
-    async def save(self, manifest_id: str, manifest: dict, created_at: str = "") -> ManifestVersion:
+    async def save(
+        self, manifest_id: str, manifest: dict, created_at: str = "", owner: str = "public"
+    ) -> ManifestVersion:
         """Append a new version for ``manifest_id`` and return the stored record.
 
         The store assigns the next version number (latest + 1, starting at 1).
@@ -49,18 +54,35 @@ class ManifestStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get(self, manifest_id: str, version: int | None = None) -> ManifestVersion | None:
-        """Return one version (``None`` => the latest), or ``None`` if absent."""
+    async def get(
+        self, manifest_id: str, version: int | None = None, owner: str | None = None
+    ) -> ManifestVersion | None:
+        """Return one version (``None`` => the latest), or ``None`` if absent.
+
+        ``owner`` (when not ``None``) additionally requires the returned
+        version's ``owner`` to match, else ``None`` (a caller can't
+        distinguish "wrong owner" from "doesn't exist").
+        """
         raise NotImplementedError
 
     @abstractmethod
-    async def list_ids(self) -> list[str]:
-        """Return every stored manifest id."""
+    async def list_ids(self, owner: str | None = None) -> list[str]:
+        """Return every stored manifest id.
+
+        ``owner`` (when not ``None``) filters to ids whose latest version
+        belongs to that owner.
+        """
         raise NotImplementedError
 
     @abstractmethod
-    async def list_versions(self, manifest_id: str) -> list[ManifestVersion]:
-        """Return all versions for ``manifest_id``, oldest first ([] if absent)."""
+    async def list_versions(
+        self, manifest_id: str, owner: str | None = None
+    ) -> list[ManifestVersion]:
+        """Return all versions for ``manifest_id``, oldest first ([] if absent).
+
+        ``owner`` (when not ``None``) filters to versions belonging to that
+        owner.
+        """
         raise NotImplementedError
 
 
@@ -73,32 +95,52 @@ class InMemoryManifestStore(ManifestStore):
         # last element is always the latest.
         self._versions: dict[str, list[ManifestVersion]] = {}
 
-    async def save(self, manifest_id: str, manifest: dict, created_at: str = "") -> ManifestVersion:
+    async def save(
+        self, manifest_id: str, manifest: dict, created_at: str = "", owner: str = "public"
+    ) -> ManifestVersion:
         history = self._versions.setdefault(manifest_id, [])
         record = ManifestVersion(
             manifest_id=manifest_id,
             version=len(history) + 1,
             manifest=manifest,
             created_at=created_at,
+            owner=owner,
         )
         history.append(record)
         return record
 
-    async def get(self, manifest_id: str, version: int | None = None) -> ManifestVersion | None:
+    async def get(
+        self, manifest_id: str, version: int | None = None, owner: str | None = None
+    ) -> ManifestVersion | None:
         history = self._versions.get(manifest_id)
         if not history:
             return None
         if version is None:
-            return history[-1]
-        if version < 1 or version > len(history):
+            record = history[-1]
+        elif version < 1 or version > len(history):
             return None
-        return history[version - 1]
+        else:
+            record = history[version - 1]
+        if owner is not None and record.owner != owner:
+            return None
+        return record
 
-    async def list_ids(self) -> list[str]:
-        return list(self._versions.keys())
+    async def list_ids(self, owner: str | None = None) -> list[str]:
+        if owner is None:
+            return list(self._versions.keys())
+        return [
+            manifest_id
+            for manifest_id, history in self._versions.items()
+            if history and history[-1].owner == owner
+        ]
 
-    async def list_versions(self, manifest_id: str) -> list[ManifestVersion]:
-        return list(self._versions.get(manifest_id, []))
+    async def list_versions(
+        self, manifest_id: str, owner: str | None = None
+    ) -> list[ManifestVersion]:
+        history = self._versions.get(manifest_id, [])
+        if owner is None:
+            return list(history)
+        return [v for v in history if v.owner == owner]
 
 
 def diff_manifest_versions(
