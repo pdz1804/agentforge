@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hmac
 import os
+import re
 import time
 
 from fastapi import HTTPException, Request
@@ -35,6 +36,33 @@ from fastapi import HTTPException, Request
 # agent_core's stores so they don't need to import this api-layer module —
 # keep the two in sync if this ever changes.
 DEFAULT_USER = "public"
+
+# A user id is the JWT `sub`, a store owner value, AND a component of the
+# per-user memory namespace (main._user_namespace joins with ':'). Restrict it
+# to this charset (no ':' , '/', whitespace) so distinct ids can't collide onto
+# one namespace bucket and can't inject into a memory backend's collection/path.
+# The reserved DEFAULT_USER sentinel is disallowed so a minted token can never
+# alias the shared single-user/legacy bucket.
+_USER_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,200}")
+
+
+def valid_user_id(user_id: object) -> bool:
+    """True if `user_id` is a safe, non-sentinel identity token."""
+    return (
+        isinstance(user_id, str)
+        and user_id != DEFAULT_USER
+        and _USER_ID_PATTERN.fullmatch(user_id) is not None
+    )
+
+
+def api_key_configured() -> bool:
+    """Whether a shared API key is configured (AGENTFORGE_API_KEY set)."""
+    return _configured_api_key() is not None
+
+
+def jwt_auth_configured() -> bool:
+    """Whether per-user JWT auth is turned on (AGENTFORGE_JWT_SECRET set)."""
+    return _configured_jwt_secret() is not None
 
 
 def _configured_api_key() -> str | None:
@@ -101,6 +129,11 @@ def issue_token(user_id: str, expires_in_s: int = 86400) -> str:
     secret = _configured_jwt_secret()
     if secret is None:
         raise RuntimeError("AGENTFORGE_JWT_SECRET is not configured; cannot issue tokens")
+    if not valid_user_id(user_id):
+        raise ValueError(
+            f"invalid user_id: must match [A-Za-z0-9_-]{{1,200}} and not be the "
+            f"reserved {DEFAULT_USER!r} sentinel"
+        )
     now = int(time.time())
     payload = {"sub": user_id, "iat": now, "exp": now + expires_in_s}
     return jwt.encode(payload, secret, algorithm=_JWT_ALGORITHM)
@@ -132,6 +165,9 @@ async def resolve_user(request: Request) -> str:
     except jwt.PyJWTError as exc:
         raise HTTPException(status_code=401, detail="invalid or expired token") from exc
     sub = payload.get("sub")
-    if not sub or not isinstance(sub, str):
-        raise HTTPException(status_code=401, detail="token missing 'sub' claim")
+    if not valid_user_id(sub):
+        # Rejects a missing/blank/non-str sub, the reserved DEFAULT_USER
+        # sentinel, and any id outside the safe charset — a crafted token can
+        # not reach the shared default bucket or collide across namespaces.
+        raise HTTPException(status_code=401, detail="token 'sub' is missing or not a valid user id")
     return sub

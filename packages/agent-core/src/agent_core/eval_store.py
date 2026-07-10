@@ -98,9 +98,12 @@ class InMemoryEvalReportStore(EvalReportStore):
 
     def __init__(self) -> None:
         self._reports: dict[str, StoredEvalReport] = {}
-        # One baseline per manifest id; promoting again overwrites it, so the
-        # gate always compares against the most recently promoted report.
-        self._baselines: dict[str, StoredBaseline] = {}
+        # One baseline per (owner, manifest id): keying by manifest id alone
+        # would let one user's promote overwrite another user's baseline for a
+        # same-named manifest (manifest ids are caller-controlled), silently
+        # destroying the first user's regression gate. Promoting again for the
+        # same owner+manifest overwrites only that owner's baseline.
+        self._baselines: dict[tuple[str, str], StoredBaseline] = {}
         # Judge-scored samples awaiting human audit, keyed by report id. Held
         # apart from the stored report so a non-judge report's bytes are unchanged.
         self._spot_checks: dict[str, list[SpotCheckSample]] = {}
@@ -129,17 +132,21 @@ class InMemoryEvalReportStore(EvalReportStore):
         return stored
 
     async def set_baseline(self, baseline: StoredBaseline, owner: str = "public") -> None:
-        self._baselines[baseline.manifest_id] = baseline.model_copy(update={"owner": owner})
+        self._baselines[(owner, baseline.manifest_id)] = baseline.model_copy(
+            update={"owner": owner}
+        )
 
     async def get_baseline(
         self, manifest_id: str, owner: str | None = None
     ) -> StoredBaseline | None:
-        stored = self._baselines.get(manifest_id)
-        if stored is None:
-            return None
-        if owner is not None and stored.owner != owner:
-            return None
-        return stored
+        if owner is not None:
+            return self._baselines.get((owner, manifest_id))
+        # Back-compat: owner=None means "no owner filter" — return any baseline
+        # for this manifest id (single-user callers store exactly one).
+        for (_owner, mid), baseline in self._baselines.items():
+            if mid == manifest_id:
+                return baseline
+        return None
 
     async def save_spot_check(self, report_id: str, samples: list[SpotCheckSample]) -> None:
         self._spot_checks[report_id] = list(samples)

@@ -244,6 +244,27 @@ def test_eval_report_store_baseline_scoped_by_owner():
     asyncio.run(scenario())
 
 
+def test_eval_baseline_cannot_be_clobbered_across_owners():
+    # A second owner promoting a baseline for the SAME (caller-controlled)
+    # manifest id must not destroy the first owner's baseline.
+    store = InMemoryEvalReportStore()
+
+    async def scenario():
+        report = _eval_report()
+        await store.set_baseline(
+            StoredBaseline(manifest_id="shared", held_out=report.held_out), owner="alice"
+        )
+        await store.set_baseline(
+            StoredBaseline(manifest_id="shared", held_out=report.held_out), owner="bob"
+        )
+        alice_baseline = await store.get_baseline("shared", owner="alice")
+        assert alice_baseline is not None and alice_baseline.owner == "alice"
+        bob_baseline = await store.get_baseline("shared", owner="bob")
+        assert bob_baseline is not None and bob_baseline.owner == "bob"
+
+    asyncio.run(scenario())
+
+
 # --------------------------------------------------------------------------- #
 # RunStore (Postgres) — owner column. Requires a real Postgres; skipped
 # cleanly otherwise (same DSN/skip convention as test_postgres_run_store.py).

@@ -14,6 +14,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
+from app.auth import DEFAULT_USER, issue_token
 from app.main import app
 
 client = TestClient(app)
@@ -45,9 +46,11 @@ def _run_id_from_sse(resp) -> str:
 
 
 def _token_for(user_id: str) -> str:
-    resp = client.post("/api/auth/token", json={"user_id": user_id})
-    assert resp.status_code == 200, resp.text
-    return resp.json()["access_token"]
+    # Mint directly (the JWT secret is set by the caller). The /api/auth/token
+    # endpoint additionally requires the shared API key to be configured
+    # (fail-closed), which is exercised separately below; the isolation tests
+    # only need a valid token for a user, not the HTTP mint path.
+    return issue_token(user_id)
 
 
 def _auth_header(user_id: str) -> dict:
@@ -103,8 +106,12 @@ def test_existing_manifest_flow_works_without_a_token_when_auth_off(
 # --------------------------------------------------------------------------- #
 def test_issue_token_round_trips_through_resolve_user(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("AGENTFORGE_JWT_SECRET", "test-scaffold-secret")
+    # Minting also requires the shared API key (fail-closed), so set + present it.
+    monkeypatch.setenv("AGENTFORGE_API_KEY", "s3cret-key")
     try:
-        minted = client.post("/api/auth/token", json={"user_id": "alice"})
+        minted = client.post(
+            "/api/auth/token", json={"user_id": "alice"}, headers={"X-API-Key": "s3cret-key"}
+        )
         assert minted.status_code == 200
         body = minted.json()
         assert body["token_type"] == "bearer"
@@ -115,6 +122,36 @@ def test_issue_token_round_trips_through_resolve_user(monkeypatch: pytest.Monkey
         )
         assert me.status_code == 200
         assert me.json() == {"user_id": "alice"}
+    finally:
+        monkeypatch.delenv("AGENTFORGE_JWT_SECRET", raising=False)
+        monkeypatch.delenv("AGENTFORGE_API_KEY", raising=False)
+
+
+def test_token_mint_fails_closed_when_jwt_on_but_no_api_key(monkeypatch: pytest.MonkeyPatch):
+    # JWT auth ON without a shared API key would make minting fully open; the
+    # endpoint must refuse (503) rather than issue unauthenticated tokens.
+    monkeypatch.setenv("AGENTFORGE_JWT_SECRET", "test-scaffold-secret")
+    monkeypatch.delenv("AGENTFORGE_API_KEY", raising=False)
+    try:
+        resp = client.post("/api/auth/token", json={"user_id": "alice"})
+        assert resp.status_code == 503
+    finally:
+        monkeypatch.delenv("AGENTFORGE_JWT_SECRET", raising=False)
+
+
+def test_public_sentinel_and_unsafe_user_ids_are_rejected(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("AGENTFORGE_JWT_SECRET", "test-scaffold-secret")
+    try:
+        for bad in (DEFAULT_USER, "alice:default", "../x", "a b", ""):
+            with pytest.raises(ValueError):
+                issue_token(bad)
+        # A hand-forged "public" token is rejected at resolve time, so it can
+        # never reach the shared default bucket once auth is on.
+        import jwt
+
+        forged = jwt.encode({"sub": DEFAULT_USER}, "test-scaffold-secret", algorithm="HS256")
+        me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {forged}"})
+        assert me.status_code == 401
     finally:
         monkeypatch.delenv("AGENTFORGE_JWT_SECRET", raising=False)
 

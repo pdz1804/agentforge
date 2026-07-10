@@ -40,7 +40,14 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from app.auth import DEFAULT_USER, issue_token, require_api_key, resolve_user
+from app.auth import (
+    DEFAULT_USER,
+    api_key_configured,
+    issue_token,
+    jwt_auth_configured,
+    require_api_key,
+    resolve_user,
+)
 from app.env_loader import load_env_files
 from app.rate_limit import eval_rate_limit, runs_rate_limit, sandbox_rate_limit
 from app.redaction import RedactingLogFilter, redact_secrets
@@ -173,10 +180,27 @@ def issue_auth_token(req: TokenRequest) -> dict:
     there is nothing to issue a token for. Requires the shared API key (when
     one is configured) so minting isn't wide open even while it's a scaffold.
     """
+    if not jwt_auth_configured():
+        raise HTTPException(
+            status_code=501,
+            detail="AGENTFORGE_JWT_SECRET is not configured; cannot issue tokens",
+        )
+    # Fail closed: minting is gated only by the shared API key, so turning JWT
+    # auth on WITHOUT setting AGENTFORGE_API_KEY would leave issuance fully open
+    # — anyone could mint a token for any user_id and defeat the isolation the
+    # JWT secret enables. Refuse rather than serve that.
+    if not api_key_configured():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "refusing to mint tokens: set AGENTFORGE_API_KEY so token issuance "
+                "is not unauthenticated when per-user auth is enabled"
+            ),
+        )
     try:
         token = issue_token(req.user_id)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"access_token": token, "token_type": "bearer"}
 
 
