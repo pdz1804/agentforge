@@ -181,21 +181,30 @@ export default function EvalPanel({ manifestYaml }: { manifestYaml: string }) {
   useEffect(() => {
     let alive = true;
     listSuites()
-      .then((s) => {
-        if (!alive) return;
-        setSuites(s);
-        // Default to an offline (free) suite so a click never bills by surprise.
-        const preferred = s.find(isOffline) ?? s[0];
-        if (preferred) setSuiteId(preferred.suite_id);
-      })
+      .then((s) => alive && setSuites(s))
       .catch((e) => alive && setSuitesError((e as Error).message));
     return () => {
       alive = false;
     };
   }, []);
 
+  // Auto-select the suite that matches the CURRENT manifest id — evals require
+  // manifest.id === suite.manifest_id, so a mismatched default (e.g. the offline
+  // echo suite while the Builder holds the assistant manifest) would only fail
+  // on Run. Prefer an offline match so a click never bills by surprise, and
+  // re-run when the manifest changes so switching templates re-picks correctly.
+  useEffect(() => {
+    if (!suites || suites.length === 0) return;
+    const matching = suites.filter((s) => s.manifest_id === parsed.id);
+    const pick = matching.find(isOffline) ?? matching[0] ?? suites.find(isOffline) ?? suites[0];
+    if (pick) setSuiteId(pick.suite_id);
+  }, [suites, parsed.id]);
+
   const selected = suites?.find((s) => s.suite_id === suiteId) ?? null;
   const live = selected ? !isOffline(selected) : false;
+  // A suite only grades the manifest it was written for.
+  const idMismatch =
+    selected != null && parsed.id != null && selected.manifest_id !== parsed.id;
 
   async function onRun() {
     if (parsed.error) {
@@ -204,6 +213,15 @@ export default function EvalPanel({ manifestYaml }: { manifestYaml: string }) {
       return;
     }
     if (!suiteId) return;
+    if (idMismatch) {
+      setError(
+        `This suite grades manifest "${selected!.manifest_id}", but the Builder manifest is ` +
+          `"${parsed.id}". Load the "${selected!.manifest_id}" manifest, or pick a suite for ` +
+          `"${parsed.id}".`,
+      );
+      setStatus("error");
+      return;
+    }
     setStatus("running");
     setError(null);
     setResult(null);
@@ -262,8 +280,8 @@ export default function EvalPanel({ manifestYaml }: { manifestYaml: string }) {
                   >
                     {suites.map((s) => (
                       <option key={s.suite_id} value={s.suite_id}>
-                        {s.suite_id} · {s.dev_task_count}+{s.held_out_task_count} tasks
-                        {isOffline(s) ? "  (offline)" : "  (live $)"}
+                        {s.suite_id} · for {s.manifest_id} · {s.dev_task_count}+
+                        {s.held_out_task_count} tasks{isOffline(s) ? "  (offline)" : "  (live $)"}
                       </option>
                     ))}
                   </select>
@@ -273,7 +291,9 @@ export default function EvalPanel({ manifestYaml }: { manifestYaml: string }) {
               <button
                 data-testid="eval-run"
                 onClick={onRun}
-                disabled={running || !suiteId || suites === null || suites?.length === 0}
+                disabled={
+                  running || !suiteId || suites === null || suites?.length === 0 || idMismatch
+                }
               >
                 {running ? <SpinnerIcon className="spin" /> : <PlayIcon />}
                 {running ? "Running…" : "Run eval"}
@@ -296,7 +316,15 @@ export default function EvalPanel({ manifestYaml }: { manifestYaml: string }) {
                 YAML parse error: {parsed.error}
               </p>
             )}
-            {live && (
+            {idMismatch && (
+              <p className="eval-warn" data-testid="eval-manifest-mismatch">
+                <GaugeIcon />
+                This suite grades manifest <b>{selected!.manifest_id}</b>, but the Builder manifest
+                is <b>{parsed.id}</b>. They must match — load the <b>{selected!.manifest_id}</b>{" "}
+                manifest, or pick a suite for <b>{parsed.id}</b>.
+              </p>
+            )}
+            {live && !idMismatch && (
               <p className="eval-warn">
                 <CoinIcon />
                 This suite grades with a paid model. Each run bills your provider — the offline{" "}
