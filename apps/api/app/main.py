@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 import json
 import logging
 import os
+import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +33,7 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from app.auth import require_api_key
+from app.env_loader import load_env_files
 from app.rate_limit import eval_rate_limit, runs_rate_limit, sandbox_rate_limit
 from app.redaction import RedactingLogFilter, redact_secrets
 
@@ -93,6 +95,15 @@ for _handler in logging.getLogger().handlers:
     _handler.addFilter(_redacting_filter)
 
 app = FastAPI(title="AgentForge API", version=core_version, lifespan=_lifespan)
+
+# Local-dev convenience: load repo-root .env (API keys, DATABASE_URL) so a plain
+# `uvicorn app.main:app` picks them up the way docker-compose / a sourced shell
+# would — otherwise the server starts keyless and only fails later on the first
+# OpenAI-backed run. Runs BEFORE select_run_store() (which reads DATABASE_URL)
+# and provider construction. Skipped under pytest so tests never inherit a
+# developer's .env; already-set env vars always win (setdefault semantics).
+if "pytest" not in sys.modules:
+    load_env_files(Path(__file__).resolve().parents[3] / ".env")
 
 # Built once at startup; later phases will make registries per-user / DB-backed.
 registries = build_default_registries()
