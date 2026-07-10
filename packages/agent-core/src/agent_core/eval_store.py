@@ -21,7 +21,7 @@ from abc import ABC, abstractmethod
 
 from pydantic import BaseModel
 
-from .eval import DevHeldOutReport, EvalReport
+from .eval import DevHeldOutReport, EvalReport, SpotCheckSample
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,20 @@ class EvalReportStore(ABC):
     async def get_baseline(self, manifest_id: str) -> StoredBaseline | None:
         raise NotImplementedError
 
+    @abstractmethod
+    async def save_spot_check(self, report_id: str, samples: list[SpotCheckSample]) -> None:
+        """Store the llm_judge human-audit samples for a report (PRD 14.2).
+
+        Kept in its own slot rather than folded into ``StoredEvalReport`` so the
+        stored report's serialization is unchanged for non-judge runs.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_spot_check(self, report_id: str) -> list[SpotCheckSample]:
+        """Return a report's spot-check samples, or ``[]`` if none/unknown."""
+        raise NotImplementedError
+
 
 class InMemoryEvalReportStore(EvalReportStore):
     """Process-local eval-report + baseline store (dev/demo scale)."""
@@ -77,6 +91,9 @@ class InMemoryEvalReportStore(EvalReportStore):
         # One baseline per manifest id; promoting again overwrites it, so the
         # gate always compares against the most recently promoted report.
         self._baselines: dict[str, StoredBaseline] = {}
+        # Judge-scored samples awaiting human audit, keyed by report id. Held
+        # apart from the stored report so a non-judge report's bytes are unchanged.
+        self._spot_checks: dict[str, list[SpotCheckSample]] = {}
 
     async def save_report(self, report_id: str, report: DevHeldOutReport, created_at: str = "") -> StoredEvalReport:
         stored = StoredEvalReport(
@@ -96,6 +113,12 @@ class InMemoryEvalReportStore(EvalReportStore):
 
     async def get_baseline(self, manifest_id: str) -> StoredBaseline | None:
         return self._baselines.get(manifest_id)
+
+    async def save_spot_check(self, report_id: str, samples: list[SpotCheckSample]) -> None:
+        self._spot_checks[report_id] = list(samples)
+
+    async def get_spot_check(self, report_id: str) -> list[SpotCheckSample]:
+        return list(self._spot_checks.get(report_id, []))
 
 
 def select_eval_report_store() -> EvalReportStore:

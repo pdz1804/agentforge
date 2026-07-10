@@ -414,6 +414,68 @@ class DevHeldOutReport(BaseModel):
     overfitting_flag: bool  # gap beyond _OVERFIT_GAP_THRESHOLD
 
 
+# --------------------------------------------------------------------------- #
+# LLM-judge human spot-check (PRD Section 14.2)
+# --------------------------------------------------------------------------- #
+class SpotCheckSample(BaseModel):
+    """One llm_judge-scored task surfaced for periodic human audit.
+
+    The llm_judge path is a model grading a model, so it needs an occasional
+    human re-check that the judge's verdicts are sane (PRD Section 14.2). Each
+    sample carries everything a reviewer needs to re-decide the call: the task
+    input, the agent's answer, and the judge's raw score/verdict. ``review_status``
+    starts at ``"needs_review"`` — every judged sample enters the audit queue
+    until a human signs off.
+
+    Only ``llm_judge`` tasks yield samples; ``programmatic`` and ``rubric``
+    scoring are deterministic and need no human audit.
+    """
+
+    model_config = _STRICT
+
+    task_id: str
+    suite_id: str
+    split: Split
+    input: str
+    answer: str | None = None
+    judge_score: float
+    passed: bool
+    judge_detail: str = ""  # includes the judge's raw response text
+    review_status: str = "needs_review"
+
+
+def collect_spot_check_samples(suite: EvalSuite, report: EvalReport) -> list[SpotCheckSample]:
+    """Pair a suite's ``llm_judge`` tasks with their scores into audit samples.
+
+    Pure and derivative: it reads an already-produced ``EvalReport`` alongside
+    its ``suite`` and pulls out only the judge-scored tasks. This keeps the
+    spot-check feature strictly additive — ``run_suite``/``TaskScore``/
+    ``EvalReport`` serialization is untouched, so non-judge runs are unaffected.
+    Returns ``[]`` when the suite has no ``llm_judge`` tasks.
+    """
+    scores_by_id = {s.task_id: s for s in report.task_scores}
+    samples: list[SpotCheckSample] = []
+    for task in suite.tasks:
+        if task.scoring_mode != ScoringMode.llm_judge:
+            continue
+        score = scores_by_id.get(task.id)
+        if score is None:  # task scored elsewhere / dropped; nothing to audit
+            continue
+        samples.append(
+            SpotCheckSample(
+                task_id=task.id,
+                suite_id=suite.id,
+                split=suite.split,
+                input=task.input,
+                answer=score.answer,
+                judge_score=score.score,
+                passed=score.passed,
+                judge_detail=score.detail,
+            )
+        )
+    return samples
+
+
 async def run_task(agent: Any, task: EvalTask, judge_fn: JudgeFn | None) -> TaskScore:
     """Run one task in deterministic eval mode and score the answer.
 

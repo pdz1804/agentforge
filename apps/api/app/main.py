@@ -62,6 +62,7 @@ from agent_core.eval import (
     SuitePair,
     check_disjoint,
     check_regression,
+    collect_spot_check_samples,
     discover_suite_pairs,
     evaluate_pair,
     load_suite_dict,
@@ -647,6 +648,13 @@ async def run_eval(req: EvalRequest) -> dict:
     await eval_report_store.save_report(
         report_id, report, created_at=datetime.now(timezone.utc).isoformat()
     )
+    # Capture llm_judge-scored tasks for periodic human audit (PRD 14.2). Stored
+    # separately from the report, so a run with no judge tasks records an empty
+    # list and its report serialization is unchanged.
+    spot_check_samples = collect_spot_check_samples(
+        pair.dev, report.dev
+    ) + collect_spot_check_samples(pair.held_out, report.held_out)
+    await eval_report_store.save_spot_check(report_id, spot_check_samples)
     body: dict = {"report_id": report_id, "report": report.model_dump()}
 
     # Resolve the regression baseline from one of two sources: an inline
@@ -694,6 +702,25 @@ async def get_eval_report(report_id: str) -> dict:
     if stored is None:
         raise HTTPException(status_code=404, detail="eval report not found")
     return stored.model_dump()
+
+
+@app.get("/api/eval/{report_id}/spot-check", dependencies=[Depends(require_api_key)])
+async def get_eval_spot_check(report_id: str) -> dict:
+    """List a stored report's llm_judge samples queued for human audit (PRD 14.2).
+
+    Read-only: surfaces each judged task's input, agent answer, and the judge's
+    raw score/verdict so a human can periodically re-check the judge. Reports
+    with no llm_judge tasks return an empty ``samples`` list.
+    """
+    stored = await eval_report_store.get_report(report_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail="eval report not found")
+    samples = await eval_report_store.get_spot_check(report_id)
+    return {
+        "report_id": report_id,
+        "manifest_id": stored.manifest_id,
+        "samples": [s.model_dump() for s in samples],
+    }
 
 
 @app.post("/api/eval/{report_id}/promote", dependencies=[Depends(require_api_key)])
