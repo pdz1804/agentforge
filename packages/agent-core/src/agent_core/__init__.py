@@ -120,6 +120,7 @@ from .tools.echo import EchoArgs, EchoTool
 from .tools.embedding_search import EmbeddingSearchArgs, EmbeddingSearchTool
 from .tools.web_search import WebSearchArgs, WebSearchTool
 from .vectorstore.in_memory import InMemoryVectorStore
+from .vectorstore.pgvector import PgVectorStore, select_vector_store
 
 __version__ = "0.1.0"
 
@@ -179,6 +180,8 @@ __all__ = [
     "EmbeddingSearchTool",
     "EmbeddingSearchArgs",
     "InMemoryVectorStore",
+    "PgVectorStore",
+    "select_vector_store",
     "VectorStore",
     "VectorHit",
     "StdioMCPConnector",

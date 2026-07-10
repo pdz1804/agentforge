@@ -35,7 +35,8 @@ anthropic = ["anthropic>=0.39"]
 openai = ["openai>=1.40"]
 mem0 = ["mem0ai>=0.1"]
 mcp = ["mcp>=1.0"]
-dev = ["pytest>=8.0"]
+postgres = ["pgvector>=0.3.6"]
+dev = ["pytest>=8.0", "pgvector>=0.3.6"]
 
 [project.urls]
 Homepage = "https://github.com/pdz1804/agentforge"
