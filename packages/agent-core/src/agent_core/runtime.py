@@ -17,6 +17,7 @@ the loop; ``limits.wall_clock_s`` bounds non-streaming runs.
 
 import asyncio
 import contextvars
+import json
 import logging
 import operator
 from concurrent.futures import ThreadPoolExecutor
@@ -86,6 +87,82 @@ class _RunState(TypedDict):
     pending: list[ToolCall]
 
 
+# ------------------------------------------------------------------------- #
+# io_schema enforcement (PRD Section 8.2 `io_schema`)
+#
+# A manifest's `io_schema.input` / `io_schema.output` name the required *shape*
+# of the user input and the final answer. The harness has no Pydantic-model
+# registry to resolve arbitrary model names against (that would be a separate
+# subsystem), so enforcement is scoped to a small, documented vocabulary of
+# content shapes that can be checked offline with stdlib `json` and no new
+# dependencies:
+#
+#   text / str / string  -> any string (no runtime check; declares "plain text")
+#   json                 -> must parse as JSON (any JSON value)
+#   json_object / object -> must parse as a JSON object (mapping)
+#   json_array / array   -> must parse as a JSON array (list)
+#
+# The whole feature is opt-in: a manifest with no `io_schema` (or one whose
+# fields are None/"text") produces `None` shapes below, so no validation runs
+# and behavior is byte-for-byte unchanged. Resolving named Pydantic models is a
+# future extension that can widen this vocabulary without changing the contract.
+_IO_SHAPE_ALIASES = {
+    "json": "json",
+    "json_object": "json_object",
+    "object": "json_object",
+    "json_array": "json_array",
+    "array": "json_array",
+}
+
+# Shapes that impose no runtime check: a declared plain-text side is satisfied
+# by any string, so it collapses to "no constraint".
+_IO_TEXT_SHAPES = frozenset({"", "text", "str", "string"})
+
+
+def _normalize_io_shape(raw: str | None) -> str | None:
+    """Map a manifest `io_schema` shape keyword to a canonical shape, or None.
+
+    None means "no constraint" (nothing declared, or a plain-text side). An
+    unrecognized keyword raises ``AgentCoreError`` so a manifest typo fails
+    fast at compile time — the same loud-on-typo contract tools and guardrails
+    already follow — rather than silently enforcing nothing.
+    """
+    if raw is None:
+        return None
+    key = raw.strip().lower()
+    if key in _IO_TEXT_SHAPES:
+        return None
+    shape = _IO_SHAPE_ALIASES.get(key)
+    if shape is None:
+        raise AgentCoreError(
+            f"io_schema shape '{raw}' is not recognized; expected one of: "
+            "text, json, json_object, json_array"
+        )
+    return shape
+
+
+def _validate_io_shape(field: str, shape: str, payload: str) -> None:
+    """Raise ``AgentCoreError`` if ``payload`` does not match ``shape``.
+
+    ``field`` is "input" or "output" and is named in every message so the
+    failing side of the contract is unambiguous.
+    """
+    try:
+        parsed = json.loads(payload)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise AgentCoreError(
+            f"io_schema {field} must be valid JSON ({shape}), but it did not parse: {exc}"
+        ) from exc
+    if shape == "json_object" and not isinstance(parsed, dict):
+        raise AgentCoreError(
+            f"io_schema {field} must be a JSON object, got {type(parsed).__name__}"
+        )
+    if shape == "json_array" and not isinstance(parsed, list):
+        raise AgentCoreError(
+            f"io_schema {field} must be a JSON array, got {type(parsed).__name__}"
+        )
+
+
 class CompiledAgent:
     """A manifest compiled into a runnable graph. Reusable across runs."""
 
@@ -108,6 +185,13 @@ class CompiledAgent:
         # (the default for every manifest without a `guardrails` list) means
         # enforcement is skipped entirely and the run is unchanged.
         self._guardrails = guardrails or []
+        # Opt-in io_schema enforcement: canonical input/output shapes derived
+        # from the manifest, both None (no validation) unless the manifest
+        # declares a non-text `io_schema`. Normalized here so an unrecognized
+        # shape keyword fails fast at compile time, not on first run.
+        io = manifest.io_schema
+        self._input_shape = _normalize_io_shape(io.input) if io is not None else None
+        self._output_shape = _normalize_io_shape(io.output) if io is not None else None
         # Opt-in durable checkpointer (Phase 5): None keeps the Phase 2
         # contract (each run starts fresh, no cross-run bleed). When set,
         # LangGraph persists state per `thread_id` so same-thread runs resume.
@@ -376,11 +460,35 @@ class CompiledAgent:
                 current = outcome.answer
         return current, events
 
+    def _validate_input(self, user_input: str) -> None:
+        """Enforce the declared input shape before the run starts.
+
+        No-op unless the manifest declared a non-text `io_schema.input`; on a
+        mismatch raises ``AgentCoreError`` (the API maps this to a client error)
+        so a malformed request never reaches the model.
+        """
+        if self._input_shape is not None:
+            _validate_io_shape("input", self._input_shape, user_input)
+
+    def _validate_output(self, answer: str) -> None:
+        """Enforce the declared output shape on the final answer.
+
+        Runs *after* guardrails (so the shape is checked on the text that will
+        actually be returned). No-op unless the manifest declared a non-text
+        `io_schema.output`; on a mismatch raises ``AgentCoreError`` rather than
+        letting a malformed answer be returned or streamed.
+        """
+        if self._output_shape is not None:
+            _validate_io_shape("output", self._output_shape, answer)
+
     # -- run APIs ----------------------------------------------------------- #
     async def arun(
         self, user_input: str, *, eval_mode: bool = False, thread_id: str = "default"
     ) -> RunResult:
         """Run to completion and return the final answer + trace."""
+        # Enforce the declared input shape before any work (memory, model): a
+        # malformed request fails fast with a clear error and never runs.
+        self._validate_input(user_input)
         memories = await self._retrieve(user_input, eval_mode)
         config = self._config(eval_mode, thread_id)
         include_system_prompt = True
@@ -424,6 +532,11 @@ class CompiledAgent:
                 result = result.model_copy(
                     update={"answer": enforced, "trace": [*result.trace, *gr_events]}
                 )
+        # Enforce the declared output shape on the final (guardrailed) answer.
+        # A non-conforming answer raises before it is persisted or returned, so
+        # callers never silently receive malformed output.
+        if result.answer is not None:
+            self._validate_output(result.answer)
         await self._persist(user_input, result.answer, eval_mode)
         return result
 
@@ -435,6 +548,16 @@ class CompiledAgent:
         Bounded by ``limits.wall_clock_s``; on timeout a final ``limit`` event is
         emitted and the stream ends cleanly.
         """
+        # Enforce the declared input shape before streaming begins. Raising here
+        # (before the first yield) surfaces as an AgentCoreError to the SSE
+        # consumer, which the API maps to a client error event.
+        self._validate_input(user_input)
+        # Hold the raw answer back whenever it must be transformed or checked
+        # after the graph completes — guardrails may rewrite it, and io_schema
+        # output validation may reject it. Either way the final "answer" event
+        # is only emitted once the answer is known-good. With neither, streaming
+        # is unchanged: the answer flows out live during the loop.
+        hold_answer = bool(self._guardrails) or self._output_shape is not None
         memories = await self._retrieve(user_input, eval_mode)
         config = self._config(eval_mode, thread_id)
         include_system_prompt = True
@@ -460,31 +583,40 @@ class CompiledAgent:
                         for event in node_output.get("trace", []):
                             if event.type == "answer":
                                 answer = event.detail
-                                # With guardrails configured, hold the raw
-                                # answer back: guardrails run after the graph
-                                # completes and the enforced answer is emitted
-                                # then, so a blocked/rewritten answer never
-                                # reaches the client. Without guardrails this
-                                # branch is skipped and streaming is identical
-                                # to before.
-                                if self._guardrails:
+                                # Hold the raw answer back when it must be
+                                # guardrailed or io_schema-validated after the
+                                # graph completes: the final answer event is
+                                # emitted then, so a blocked/rewritten/malformed
+                                # answer never reaches the client. With neither
+                                # enforcement this branch is skipped and
+                                # streaming is identical to before.
+                                if hold_answer:
                                     continue
                             yield event
-            # Guardrail enforcement: run policies over the held answer, emit a
-            # trace event for each that acted, then emit the enforced answer as
-            # a final "answer" event (so SSE consumers that key off "answer"
-            # record the guardrailed text, not the raw model output).
-            if answer is not None and self._guardrails:
-                enforced, gr_events = self._enforce_guardrails(
-                    user_input, answer, last_step
-                )
-                for gr_event in gr_events:
-                    yield gr_event
-                answer = enforced
+            # Post-run enforcement over the held answer: guardrails first
+            # (they may rewrite/refuse it), then io_schema output validation on
+            # the resulting text. Only after both pass is the final "answer"
+            # event emitted, so SSE consumers that key off "answer" record the
+            # enforced text — never the raw model output, and never a malformed
+            # answer (a shape mismatch raises before the event is yielded).
+            if answer is not None and hold_answer:
+                node = "agent"
+                if self._guardrails:
+                    enforced, gr_events = self._enforce_guardrails(
+                        user_input, answer, last_step
+                    )
+                    for gr_event in gr_events:
+                        yield gr_event
+                    answer = enforced
+                    if gr_events:
+                        node = "guardrails"
+                # Raises AgentCoreError (caught by the API's SSE handler) instead
+                # of emitting a non-conforming answer to the stream.
+                self._validate_output(answer)
                 yield TraceEvent(
                     step=last_step,
                     type="answer",
-                    node="guardrails" if gr_events else "agent",
+                    node=node,
                     detail=answer,
                 )
             # Graph ended normally. If it stopped without an answer (step budget
