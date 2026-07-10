@@ -58,8 +58,6 @@ def resolve_manifest(
     - ``sub_agents`` are only checked when ``known_agents`` is supplied; the
       single-manifest path (e.g. the validate endpoint) cannot resolve them yet.
       Multi-manifest resolution lands with the runtime in Phase 2.
-    - ``guardrails`` reference a GuardrailRegistry that does not exist yet
-      (Phase 6); they are currently accepted without resolution.
     - ``io_schema`` names are not resolved to Pydantic models yet (Phase 2).
     """
     missing: list[str] = []
@@ -74,6 +72,9 @@ def resolve_manifest(
     for server in manifest.mcp_servers:
         if not registries.mcp.has(server):
             missing.append(f"mcp server '{server}'")
+    for guardrail in manifest.guardrails:
+        if not registries.guardrails.has(guardrail):
+            missing.append(f"guardrail '{guardrail}'")
     if manifest.memory and not registries.memory.has(manifest.memory.provider):
         missing.append(f"memory provider '{manifest.memory.provider}'")
     if known_agents is not None:

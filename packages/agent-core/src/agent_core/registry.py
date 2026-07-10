@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Generic, TypeVar
 
 from .errors import RegistrationError, UnknownReferenceError
+from .guardrails import Guardrail
 from .interfaces import BaseTool, MemoryProvider, ModelProvider
 
 T = TypeVar("T")
@@ -59,7 +60,7 @@ class Registry(Generic[T]):
 
 @dataclass
 class Registries:
-    """The five registries a manifest is resolved against."""
+    """The registries a manifest is resolved against."""
 
     tools: Registry[BaseTool] = field(default_factory=lambda: Registry("tool"))
     prompts: Registry[str] = field(default_factory=lambda: Registry("prompt"))
@@ -71,3 +72,8 @@ class Registries:
     )
     # MCP registry stays generic until the connector lands (Phase 3).
     mcp: Registry[object] = field(default_factory=lambda: Registry("mcp server"))
+    # Output guardrails resolved from a manifest's `guardrails` list and run
+    # over the final answer (see guardrails.py / runtime enforcement).
+    guardrails: Registry[Guardrail] = field(
+        default_factory=lambda: Registry("guardrail")
+    )

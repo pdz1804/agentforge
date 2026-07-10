@@ -10,6 +10,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from .embeddings import openai_embed
+from .guardrails import (
+    EducationalDisclaimerGuardrail,
+    NoMedicalDosageGuardrail,
+    NoSecretExfilGuardrail,
+)
 from .memory.in_memory import InMemoryMemoryProvider
 from .memory.mem0_provider import Mem0MemoryProvider
 from .models.anthropic import AnthropicModelProvider
@@ -60,6 +65,9 @@ def build_default_registries(prompts_dir: str | Path | None = None) -> Registrie
     registries.models.register("openai", OpenAIModelProvider())
     registries.memory.register("in_memory", InMemoryMemoryProvider())
     registries.memory.register("mem0", Mem0MemoryProvider())
+    registries.guardrails.register("no_medical_dosage", NoMedicalDosageGuardrail())
+    registries.guardrails.register("educational_disclaimer", EducationalDisclaimerGuardrail())
+    registries.guardrails.register("no_secret_exfil", NoSecretExfilGuardrail())
     registries.prompts.register(_ECHO_PROMPT_KEY, _echo_prompt_text())
     registries.prompts.register(
         "prompts/assistant.md",

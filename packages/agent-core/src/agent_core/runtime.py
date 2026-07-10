@@ -31,6 +31,7 @@ from .checkpoint import CheckpointerArg, checkpointer_from_env
 from .checkpoint import aclose as aclose_checkpointer
 from .checkpoint import materialize as materialize_checkpointer
 from .errors import AgentCoreError, UnknownReferenceError
+from .guardrails import Guardrail
 from .interfaces import (
     BaseTool,
     MCPConnector,
@@ -59,11 +60,15 @@ class TraceEvent(BaseModel):
     """One observable step in a run (PRD Section 8.4 trace bus)."""
 
     step: int
-    type: str  # "model" | "tool" | "answer" | "limit"
+    type: str  # "model" | "tool" | "answer" | "limit" | "guardrail"
     node: str
     detail: str = ""
     tool_calls: list[ToolCall] = Field(default_factory=list)
     usage: dict[str, int] = Field(default_factory=dict)
+    # Set to the acting guardrail's name on a "guardrail" event; empty on every
+    # other event. Additive with a default so the SSE TraceEvent schema and all
+    # non-guardrail traces are unchanged.
+    guardrail: str = ""
 
 
 class RunResult(BaseModel):
@@ -92,12 +97,17 @@ class CompiledAgent:
         tools: dict[str, BaseTool],
         memory: MemoryProvider | None = None,
         checkpointer: CheckpointerArg = None,
+        guardrails: list[Guardrail] | None = None,
     ) -> None:
         self.manifest = manifest
         self._provider = provider
         self._system_prompt = system_prompt
         self._tools = tools
         self._memory = memory
+        # Output guardrails run in listed order over the final answer. Empty
+        # (the default for every manifest without a `guardrails` list) means
+        # enforcement is skipped entirely and the run is unchanged.
+        self._guardrails = guardrails or []
         # Opt-in durable checkpointer (Phase 5): None keeps the Phase 2
         # contract (each run starts fresh, no cross-run bleed). When set,
         # LangGraph persists state per `thread_id` so same-thread runs resume.
@@ -339,6 +349,33 @@ class CompiledAgent:
             return "max_steps"
         return "no_action"
 
+    def _enforce_guardrails(
+        self, user_input: str, answer: str, step: int
+    ) -> tuple[str, list[TraceEvent]]:
+        """Run each configured guardrail over ``answer`` in order.
+
+        Returns the final (possibly rewritten/refused) answer and a trace event
+        per guardrail that actually acted — a guardrail that passes the answer
+        through unchanged and reports no note is silent. Callers with no
+        guardrails never reach here, so the no-guardrail path stays untouched.
+        """
+        events: list[TraceEvent] = []
+        current = answer
+        for guardrail in self._guardrails:
+            outcome = guardrail.check(user_input, current)
+            if outcome.note or outcome.answer != current:
+                events.append(
+                    TraceEvent(
+                        step=step,
+                        type="guardrail",
+                        node=guardrail.name,
+                        detail=outcome.note or "answer modified",
+                        guardrail=guardrail.name,
+                    )
+                )
+                current = outcome.answer
+        return current, events
+
     # -- run APIs ----------------------------------------------------------- #
     async def arun(
         self, user_input: str, *, eval_mode: bool = False, thread_id: str = "default"
@@ -376,6 +413,17 @@ class CompiledAgent:
             trace=final["trace"],
             stopped_reason=self._stopped_reason(final, self.manifest.limits.max_steps),
         )
+        # Enforce output guardrails on the produced answer. The returned answer
+        # (and anything persisted to memory) is the guardrailed one; guardrail
+        # trace events are appended so the record shows what was changed.
+        if self._guardrails and result.answer is not None:
+            enforced, gr_events = self._enforce_guardrails(
+                user_input, result.answer, result.steps
+            )
+            if gr_events:
+                result = result.model_copy(
+                    update={"answer": enforced, "trace": [*result.trace, *gr_events]}
+                )
         await self._persist(user_input, result.answer, eval_mode)
         return result
 
@@ -412,7 +460,33 @@ class CompiledAgent:
                         for event in node_output.get("trace", []):
                             if event.type == "answer":
                                 answer = event.detail
+                                # With guardrails configured, hold the raw
+                                # answer back: guardrails run after the graph
+                                # completes and the enforced answer is emitted
+                                # then, so a blocked/rewritten answer never
+                                # reaches the client. Without guardrails this
+                                # branch is skipped and streaming is identical
+                                # to before.
+                                if self._guardrails:
+                                    continue
                             yield event
+            # Guardrail enforcement: run policies over the held answer, emit a
+            # trace event for each that acted, then emit the enforced answer as
+            # a final "answer" event (so SSE consumers that key off "answer"
+            # record the guardrailed text, not the raw model output).
+            if answer is not None and self._guardrails:
+                enforced, gr_events = self._enforce_guardrails(
+                    user_input, answer, last_step
+                )
+                for gr_event in gr_events:
+                    yield gr_event
+                answer = enforced
+                yield TraceEvent(
+                    step=last_step,
+                    type="answer",
+                    node="guardrails" if gr_events else "agent",
+                    detail=answer,
+                )
             # Graph ended normally. If it stopped without an answer (step budget
             # reached while a tool was still pending, or the model took no
             # action), emit an explicit terminal ``limit`` event so consumers
@@ -572,6 +646,16 @@ def compile_agent(
         if manifest.memory is not None
         else None
     )
+    # Resolve output guardrails fail-fast, exactly like tools/prompts: an
+    # unknown guardrail name raises a clear error here rather than being
+    # silently ignored at runtime.
+    guardrails = [registries.guardrails.get(name) for name in manifest.guardrails]
     return CompiledAgent(
-        manifest, provider, system_prompt, tools, memory=memory, checkpointer=resolved_checkpointer
+        manifest,
+        provider,
+        system_prompt,
+        tools,
+        memory=memory,
+        checkpointer=resolved_checkpointer,
+        guardrails=guardrails,
     )

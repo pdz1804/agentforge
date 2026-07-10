@@ -16,6 +16,13 @@ from .errors import (
     RegistrationError,
     UnknownReferenceError,
 )
+from .guardrails import (
+    EducationalDisclaimerGuardrail,
+    Guardrail,
+    GuardrailOutcome,
+    NoMedicalDosageGuardrail,
+    NoSecretExfilGuardrail,
+)
 from .eval import (
     DevHeldOutReport,
     EvalReport,
@@ -132,6 +139,12 @@ __all__ = [
     "ExecResult",
     "RunContext",
     "MCPConnector",
+    # guardrails
+    "Guardrail",
+    "GuardrailOutcome",
+    "NoMedicalDosageGuardrail",
+    "EducationalDisclaimerGuardrail",
+    "NoSecretExfilGuardrail",
     # runtime
     "compile_agent",
     "CompiledAgent",
