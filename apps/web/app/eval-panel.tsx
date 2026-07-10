@@ -9,10 +9,13 @@ import yaml from "js-yaml";
 import {
   listSuites,
   runEval,
+  promoteBaseline,
+  getSpotCheck,
   type EvalSuite,
   type EvalResponse,
   type RegressionVerdict,
   type SplitReport,
+  type SpotCheckResponse,
 } from "@/lib/api";
 import {
   CheckIcon,
@@ -167,6 +170,20 @@ export default function EvalPanel({ manifestYaml }: { manifestYaml: string }) {
   const [result, setResult] = useState<EvalResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Eval-gate UX: opt into gating the next run against the manifest's stored
+  // baseline, and promote the freshest report to become that baseline.
+  const [compareBaseline, setCompareBaseline] = useState(false);
+  const [promote, setPromote] = useState<{
+    status: "idle" | "saving" | "saved" | "error";
+    message: string | null;
+  }>({ status: "idle", message: null });
+
+  // Human spot-check viewer for llm_judge suites — lazily fetched per report.
+  const [spotOpen, setSpotOpen] = useState(false);
+  const [spot, setSpot] = useState<SpotCheckResponse | null>(null);
+  const [spotStatus, setSpotStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [spotError, setSpotError] = useState<string | null>(null);
+
   // Parsed manifest id for display — evals always run against the CURRENT
   // Builder manifest, so surface which one and any YAML problem up front.
   const parsed = useMemo(() => {
@@ -225,13 +242,66 @@ export default function EvalPanel({ manifestYaml }: { manifestYaml: string }) {
     setStatus("running");
     setError(null);
     setResult(null);
+    // A fresh run invalidates the previous report's baseline/spot-check state.
+    setPromote({ status: "idle", message: null });
+    setSpot(null);
+    setSpotStatus("idle");
+    setSpotError(null);
+    setSpotOpen(false);
     try {
-      const res = await runEval({ manifest: parsed.manifest, suite_id: suiteId });
+      const res = await runEval({
+        manifest: parsed.manifest,
+        suite_id: suiteId,
+        use_stored_baseline: compareBaseline,
+      });
       setResult(res);
       setStatus("done");
     } catch (e) {
-      setError((e as Error).message);
+      const msg = (e as Error).message;
+      // The gate 404s when no baseline has been promoted for this manifest yet —
+      // point the user at the "Set as baseline" button instead of the raw detail.
+      setError(
+        compareBaseline && /no stored baseline/i.test(msg)
+          ? `No stored baseline for this manifest yet. Run without comparing, then click ` +
+              `"Set as baseline" to store one — future runs can then compare against it.`
+          : msg,
+      );
       setStatus("error");
+    }
+  }
+
+  async function onPromote() {
+    const reportId = result?.report_id;
+    if (!reportId) return;
+    setPromote({ status: "saving", message: null });
+    try {
+      const res = await promoteBaseline(reportId);
+      setPromote({
+        status: "saved",
+        message: `Baseline saved for ${res.manifest_id} (held-out pass rate ${pct(
+          res.baseline_pass_rate,
+        )}). Enable "compare vs stored baseline" and re-run to gate against it.`,
+      });
+    } catch (e) {
+      setPromote({ status: "error", message: (e as Error).message });
+    }
+  }
+
+  async function onToggleSpotCheck() {
+    const next = !spotOpen;
+    setSpotOpen(next);
+    // Lazily fetch on first open for the current report.
+    if (next && spotStatus === "idle" && result?.report_id) {
+      setSpotStatus("loading");
+      setSpotError(null);
+      try {
+        const res = await getSpotCheck(result.report_id);
+        setSpot(res);
+        setSpotStatus("done");
+      } catch (e) {
+        setSpotError((e as Error).message);
+        setSpotStatus("error");
+      }
     }
   }
 
@@ -298,6 +368,28 @@ export default function EvalPanel({ manifestYaml }: { manifestYaml: string }) {
                 {running ? <SpinnerIcon className="spin" /> : <PlayIcon />}
                 {running ? "Running…" : "Run eval"}
               </button>
+
+              <label
+                className="eval-gate-toggle"
+                title="Gate this run against the manifest's stored baseline"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  fontSize: 12,
+                  color: "var(--ink-soft)",
+                  cursor: running ? "not-allowed" : "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  data-testid="eval-compare-baseline"
+                  checked={compareBaseline}
+                  onChange={(e) => setCompareBaseline(e.target.checked)}
+                  disabled={running}
+                />
+                compare vs stored baseline
+              </label>
             </div>
 
             <div className="eval-meta">
@@ -377,6 +469,130 @@ export default function EvalPanel({ manifestYaml }: { manifestYaml: string }) {
                   <SplitCard report={result.report.dev} held={false} />
                   <SplitCard report={result.report.held_out} held />
                 </div>
+
+                {result.report_id && (
+                  <div
+                    className="eval-gate"
+                    style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 12 }}
+                  >
+                    <div
+                      className="eval-gate-actions"
+                      style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}
+                    >
+                      <button
+                        className="secondary"
+                        data-testid="eval-promote"
+                        onClick={onPromote}
+                        disabled={promote.status === "saving"}
+                      >
+                        {promote.status === "saving" ? (
+                          <SpinnerIcon className="spin" />
+                        ) : (
+                          <TargetIcon />
+                        )}
+                        {promote.status === "saving" ? "Saving…" : "Set as baseline"}
+                      </button>
+                      {promote.status === "saved" && promote.message && (
+                        <span
+                          data-testid="eval-promote-status"
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 6,
+                            fontSize: 12,
+                            color: "var(--ok)",
+                          }}
+                        >
+                          <CheckIcon /> {promote.message}
+                        </span>
+                      )}
+                      {promote.status === "error" && promote.message && (
+                        <span className="err" data-testid="eval-promote-error">
+                          {promote.message}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="eval-spot" data-testid="eval-spot-check">
+                      <button
+                        className="secondary"
+                        data-testid="eval-spot-check-toggle"
+                        aria-expanded={spotOpen}
+                        onClick={onToggleSpotCheck}
+                      >
+                        <FlaskIcon />
+                        {spotOpen ? "Hide" : "Show"} judge spot-check
+                      </button>
+                      {spotOpen && (
+                        <div className="eval-spot-body" style={{ marginTop: 10 }}>
+                          {spotStatus === "loading" && (
+                            <p className="empty" style={{ margin: 0 }}>
+                              <SpinnerIcon className="spin" />
+                              Loading judged samples…
+                            </p>
+                          )}
+                          {spotStatus === "error" && (
+                            <p className="err" data-testid="eval-spot-check-error">
+                              {spotError}
+                            </p>
+                          )}
+                          {spotStatus === "done" && spot && spot.samples.length === 0 && (
+                            <p className="empty" style={{ margin: 0 }}>
+                              No llm-judge samples — this suite scores deterministically, so no
+                              human audit is needed.
+                            </p>
+                          )}
+                          {spotStatus === "done" && spot && spot.samples.length > 0 && (
+                            <div
+                              className="eval-tasks"
+                              aria-label="judge spot-check samples"
+                              style={{ gap: 8, maxHeight: 360 }}
+                            >
+                              {spot.samples.map((s) => (
+                                <div
+                                  key={`${s.split}-${s.task_id}`}
+                                  style={{
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    gap: 4,
+                                    padding: "8px 14px",
+                                    borderBottom: "1px solid var(--line-soft)",
+                                  }}
+                                >
+                                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                    <span className="et-id" title={s.task_id} style={{ flex: 1 }}>
+                                      {s.task_id}
+                                      <span className="es-sub"> · {prettySplit(s.split)}</span>
+                                    </span>
+                                    <span className={`pill ${s.passed ? "ok" : "bad"}`}>
+                                      {s.passed ? "PASS" : "FAIL"} {num(s.judge_score)}
+                                    </span>
+                                    <span className="pill info" title="human audit status">
+                                      {s.review_status ?? "—"}
+                                    </span>
+                                  </div>
+                                  <p
+                                    className="es-sub"
+                                    style={{ margin: 0 }}
+                                    title={s.input}
+                                  >
+                                    <b>input:</b> {s.input}
+                                  </p>
+                                  <p
+                                    style={{ margin: 0, fontSize: 12, color: "var(--ink-soft)" }}
+                                    title={s.judge_detail || undefined}
+                                  >
+                                    <b>answer:</b> {s.answer ?? "—"}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </>
             )}
           </div>

@@ -93,6 +93,13 @@ export type DevHeldOutReport = {
 // tolerated fallbacks for other builds.
 export type RegressionVerdict = {
   blocked?: boolean;
+  delta?: number; // held_out.pass_rate - baseline.pass_rate; negative = regression
+  held_out_pass_rate?: number;
+  baseline_pass_rate?: number;
+  newly_failing_tasks?: string[];
+  newly_passing_tasks?: string[];
+  detail?: string;
+  // Tolerated fallbacks for other/older backend builds.
   passed?: boolean;
   ok?: boolean;
   regressed?: boolean;
@@ -100,8 +107,28 @@ export type RegressionVerdict = {
 };
 
 export type EvalResponse = {
+  report_id?: string;
   report: DevHeldOutReport;
   regression?: RegressionVerdict | null;
+};
+
+// One llm_judge-scored task surfaced for human audit (backend SpotCheckSample).
+export type SpotCheckSample = {
+  task_id: string;
+  suite_id?: string;
+  split: string;
+  input: string;
+  answer?: string | null;
+  judge_score: number;
+  passed: boolean;
+  judge_detail?: string;
+  review_status?: string;
+};
+
+export type SpotCheckResponse = {
+  report_id: string;
+  manifest_id: string;
+  samples: SpotCheckSample[];
 };
 
 export async function listSuites(): Promise<EvalSuite[]> {
@@ -111,27 +138,54 @@ export async function listSuites(): Promise<EvalSuite[]> {
   return j.suites ?? [];
 }
 
+// Surface FastAPI's {detail} when present, else a `<label> <status>` fallback.
+async function apiError(r: Response, label: string): Promise<Error> {
+  let msg = `${label}: ${r.status}`;
+  try {
+    const j = await r.json();
+    if (j?.detail) msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
+  } catch {
+    /* non-JSON error body */
+  }
+  return new Error(msg);
+}
+
 export async function runEval(body: {
   manifest: unknown;
   suite_id: string;
   agents?: unknown[];
+  use_stored_baseline?: boolean;
 }): Promise<EvalResponse> {
   const r = await fetch("/api/eval", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
   });
-  if (!r.ok) {
-    // Surface FastAPI's {detail} when present, else the status code.
-    let msg = `eval failed: ${r.status}`;
-    try {
-      const j = await r.json();
-      if (j?.detail) msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
-    } catch {
-      /* non-JSON error body */
-    }
-    throw new Error(msg);
-  }
+  if (!r.ok) throw await apiError(r, "eval failed");
+  return r.json();
+}
+
+// Promote a stored report's held-out split to its manifest's baseline, so a
+// later run can gate against it via `use_stored_baseline: true`.
+export async function promoteBaseline(
+  reportId: string,
+): Promise<{ manifest_id: string; source_report_id: string; baseline_pass_rate: number }> {
+  const r = await fetch(`/api/eval/${encodeURIComponent(reportId)}/promote`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  if (!r.ok) throw await apiError(r, "promote failed");
+  return r.json();
+}
+
+// Fetch a stored report's llm_judge samples queued for human audit. Reports
+// with no llm_judge tasks return an empty `samples` list.
+export async function getSpotCheck(reportId: string): Promise<SpotCheckResponse> {
+  const r = await fetch(`/api/eval/${encodeURIComponent(reportId)}/spot-check`, {
+    cache: "no-store",
+    headers: authHeaders(),
+  });
+  if (!r.ok) throw await apiError(r, "spot-check failed");
   return r.json();
 }
 
