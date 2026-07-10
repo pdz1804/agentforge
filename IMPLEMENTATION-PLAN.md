@@ -8,6 +8,15 @@ Stack: FastAPI + LangGraph + mem0 + sandbox (Python) / Next.js + Three.js (TS).
 **Status legend:** ☐ pending · ◐ in-progress · ☑ done
 
 ## Progress
+- **2026-07-11 (continuation — pgvector + per-user scaffold + io_schema + eval-gate UI)** — Opt-in **pgvector**
+  `VectorStore` backend (`vectorstore/pgvector.py`) behind the existing ABC via a `select_vector_store()` seam
+  (`AGENTFORGE_VECTOR_STORE=pgvector` + `DATABASE_URL`, falls back to in-memory); validated live against pgvector 0.8.5.
+  **Per-user scaffold**: `resolve_user` JWT dependency (`AGENTFORGE_JWT_SECRET`, `DEFAULT_USER="public"` sentinel), an
+  append-only optional `owner` param threaded through the run/manifest/eval stores (Postgres `runs` gains an owner column
+  via idempotent ALTER), per-user scoping on protected endpoints + memory namespaces, dev `POST /api/auth/token` +
+  `GET /api/auth/me`; owner scoping validated live against Postgres. `io_schema` now resolves **named Pydantic models**
+  (`registries.schemas`). Eval-gate **UI** wired: set-as-baseline, compare-vs-stored-baseline, judge spot-check viewer.
+  **Still deferred:** real login/OAuth + web login surface (token minter is a scaffold), pgvector as the default.
 - **2026-07-10 (Phases 7, 9, 10 complete; 11 partial; 12 proven)** — Eval harness shipped: `eval.py`
   + `POST /api/eval` + `eval-panel.tsx` (dev/held-out split with disjointness check, programmatic/rubric/LLM-judge
   scoring, deterministic eval mode, regression gate). CI shipped (`.github/workflows/ci.yml`: lint → python tests →
@@ -44,7 +53,7 @@ Stack: FastAPI + LangGraph + mem0 + sandbox (Python) / Next.js + Three.js (TS).
 | 8 | Traces, observability, cost accounting | 2 | Observability | ☑ (persistence, cost, API; Postgres store + retention shipped) |
 | 9 | **Agent evaluation harness (dev/held-out)** | 2,3,5 | **Validation/testing of agents** | ☑ (eval.py + `/api/eval` + eval-panel.tsx; dev/held-out split, scoring modes, regression gate) |
 | 10 | Software test pyramid + CI gates | 1–5,9 | **System correctness (PRD §14.5–14.7)** | ☑ (CI workflow + conformance/extension-conformance tests + sandbox-security gate) |
-| 11 | Auth, hardening, secret redaction | all | Platform, security | ◐ (shared-key auth + rate limits + trace/log redaction shipped; no per-user isolation yet) |
+| 11 | Auth, hardening, secret redaction | all | Platform, security | ◐ (shared-key auth + rate limits + trace/log redaction + per-user scaffold w/ owner-scoped stores shipped; real login/OAuth deferred) |
 | 12 | Cross-product reuse check (FloraLens) | 1–5 | Integration proof | ☑ (FloraLens naturalist assistant runs on unmodified `agent_core`) |
 
 ---
