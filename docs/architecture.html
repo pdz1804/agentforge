@@ -1,0 +1,719 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AgentForge Architecture</title><style>
+:root{--bg:#fbfcfa;--panel:#fff;--ink:#182319;--muted:#566b58;--line:#dde6dc;
+--accent:#2f7a52;--accent2:#3fa06a;--code-bg:#f2f6f1;--pill:#e4f0e7}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1512;--panel:#151d17;--ink:#e8f0e8;
+--muted:#9fb3a1;--line:#2a352b;--accent:#6fce9c;--accent2:#3fa06a;--code-bg:#1b241d;--pill:#1c2e22}}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);margin:0;
+font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;
+-webkit-font-smoothing:antialiased}
+.wrap{max-width:900px;margin:0 auto;padding:48px 24px 100px}
+h1,h2,h3,h4{font-family:Georgia,"Times New Roman",serif;font-weight:600;line-height:1.25;
+letter-spacing:-.01em;margin:1.8em 0 .5em}
+h1{font-size:2.1rem;margin-top:.2em;border-bottom:2px solid var(--line);padding-bottom:.3em}
+h2{font-size:1.5rem;border-bottom:1px solid var(--line);padding-bottom:.25em}
+h3{font-size:1.2rem}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+p,li{color:var(--ink)}
+img{max-width:100%;height:auto;border:1px solid var(--line);border-radius:12px;
+box-shadow:0 6px 20px -8px rgba(24,35,25,.16);display:block;margin:18px 0}
+code{background:var(--code-bg);border:1px solid var(--line);border-radius:5px;
+padding:.12em .4em;font:.88em ui-monospace,"Cascadia Code",Consolas,monospace}
+pre{background:var(--code-bg);border:1px solid var(--line);border-radius:12px;
+padding:16px 18px;overflow-x:auto}pre code{background:none;border:0;padding:0}
+blockquote{border-left:3px solid var(--accent2);margin:1em 0;padding:.2em 0 .2em 16px;color:var(--muted)}
+table{border-collapse:collapse;width:100%;margin:18px 0;font-size:.95em;display:block;overflow-x:auto}
+th,td{border:1px solid var(--line);padding:8px 12px;text-align:left}
+th{background:var(--pill)}
+hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+.toc{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:6px 18px;margin:0 0 24px}
+</style></head>
+<body><div class="wrap"><h1 id="agentforge-architecture">AgentForge Architecture</h1>
+<p>AgentForge is a full-stack workbench for building, running, evaluating, and extending multi-agent AI systems. This document describes the system architecture, data models, and runtime flow.</p>
+<hr />
+<h2 id="system-layers">System Layers</h2>
+<p>AgentForge consists of three core layers:</p>
+<pre><code>┌──────────────────────────────────────────────────────────────┐
+│  Frontend (Next.js + React + Three.js)                       │
+│  Agent Builder | Run Panel (SSE) | 3D Graph | Eval Viewer    │
+└─────────┬────────────────────────────────────────────────────┘
+          │ HTTP/SSE (port 3000 → 8077)
+┌─────────▼────────────────────────────────────────────────────┐
+│  Backend (FastAPI on port 8077)                              │
+│  /agents /runs /eval /tools /sandbox /memory /suites         │
+└─────────┬────────────────────────────────────────────────────┘
+          │ (imports)
+┌─────────▼────────────────────────────────────────────────────┐
+│  Unified Agent Core (packages/agent-core)                    │
+│  Manifest | Registries | LangGraph Runtime | Eval | Tools    │
+└─────────┬────────────────────────────────────────────────────┘
+          │ (optional connections)
+┌─────────▼────────────────────────────────────────────────────┐
+│  Persistence &amp; External Services                            │
+│  Postgres (runs/traces/evals) | Docker Sandbox | MCP Servers │
+└──────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3 id="layer-1-frontend-appsweb">Layer 1: Frontend (<code>apps/web</code>)</h3>
+<ul>
+<li><strong>Stack:</strong> Next.js 14, React, TypeScript, Three.js</li>
+<li><strong>Responsibilities:</strong></li>
+<li>YAML/JSON manifest editor with live validation</li>
+<li>Live run panel: stream events from SSE, show tool calls and responses</li>
+<li>3D execution graph: animate nodes and edges, timeline scrubber replay</li>
+<li>Run history: list, filter, export as JSON</li>
+<li>Eval viewer: side-by-side dev/held-out reports</li>
+<li>Dark/light theme toggle</li>
+</ul>
+<h3 id="layer-2-backend-appsapi">Layer 2: Backend (<code>apps/api</code>)</h3>
+<ul>
+<li><strong>Stack:</strong> FastAPI (Python), Pydantic</li>
+<li><strong>Responsibilities:</strong></li>
+<li>REST + SSE endpoints (agents, runs, eval, sandbox, memory, observability)</li>
+<li>Request validation and error handling</li>
+<li>Manifest persistence (optional Postgres backend)</li>
+<li>Eval report storage and promotion</li>
+<li>Rate limiting, optional API key auth, secret redaction</li>
+<li>Proxy to the Unified Agent Core</li>
+</ul>
+<h3 id="layer-3-unified-agent-core-packagesagent-core">Layer 3: Unified Agent Core (<code>packages/agent-core</code>)</h3>
+<ul>
+<li><strong>Stack:</strong> Python, LangGraph, Pydantic</li>
+<li><strong>Responsibilities:</strong></li>
+<li>Manifest schema and loader</li>
+<li>Pluggable registries (tools, models, memory, MCP, prompts)</li>
+<li>LangGraph compilation: manifest → StateGraph → executable agent</li>
+<li>Trace event bus</li>
+<li>Eval harness (dev/held-out split, scoring modes, regression gate)</li>
+<li>Built-in tools (web search, code executor, embedding search, HTTP fetch)</li>
+<li>Memory providers (in-memory, mem0)</li>
+<li>Sandbox interface (Docker backend)</li>
+<li>MCP connector</li>
+</ul>
+<p>The core is <strong>reusable</strong>: FloraLens installs it as an editable dependency and runs naturalist agents against the same code without modifications.</p>
+<hr />
+<h2 id="agent-manifest-and-runtime">Agent Manifest and Runtime</h2>
+<h3 id="manifest-schema">Manifest Schema</h3>
+<p>An agent is fully defined by a declarative YAML or JSON manifest:</p>
+<pre><code class="language-yaml">id: coder_supervisor
+version: 3
+model:
+  provider: anthropic              # ModelProvider registry key
+  name: claude-sonnet-5            # Model name
+  temperature: 0.2                 # 0 for eval, 0.2+ for generation
+  max_tokens: 4096
+prompt_ref: prompts/coder.md       # PromptRegistry key (YAML/markdown ref)
+memory:
+  provider: in_memory              # MemoryProvider: in_memory or mem0
+  scope: user                       # user | agent | session
+  namespace: agentforge
+tools: [web_search, code_executor] # ToolRegistry keys (allowlist)
+mcp_servers: [github_mcp]          # MCPRegistry keys
+sub_agents: [planner, coder]       # Multi-agent delegation
+guardrails: [no_secret_exfil]      # GuardrailRegistry keys
+io_schema:
+  input: CoderRequest              # Pydantic model (input validation)
+  output: CoderResult              # Pydantic model (output validation)
+limits:
+  max_steps: 20                     # Max agent loop iterations
+  max_tokens_total: 200000         # Total tokens across entire run
+  wall_clock_s: 120                # Wall-clock timeout in seconds
+eval_suite: suites/coder_v1        # Eval task suite for this manifest
+</code></pre>
+<p><strong>Key properties:</strong>
+- <strong>Declarative:</strong> No code needed to define an agent; configuration is data.
+- <strong>Validated:</strong> Schema mismatch or unknown references fail fast.
+- <strong>Versioned:</strong> Stored manifest versions tracked with timestamps.
+- <strong>Evaluated:</strong> Each version is gated by a dev/held-out test suite.</p>
+<h3 id="runtime-manifest-agent">Runtime: Manifest → Agent</h3>
+<p>The compiler transforms a manifest into an executable LangGraph agent:</p>
+<pre><code>1. load_manifest_dict(raw_dict)        # Parse YAML, deserialize
+2. resolve_manifest(manifest)          # Resolve all registry references
+3. compile_agent(manifest, registries) # Build LangGraph StateGraph
+   ├─ Create typed state (Pydantic)
+   ├─ Add agent node (model call + tool dispatch)
+   ├─ Add tool nodes (one per tool)
+   ├─ Add router (decide: continue loop or answer)
+   └─ Attach checkpointer (optional SQLite/Postgres)
+4. agent.astream(input)                # Run, yield trace events
+   └─ Each step emits TraceEvent (start, tool_call, etc.)
+</code></pre>
+<h3 id="langgraph-runtime-the-react-loop">LangGraph Runtime: The ReAct Loop</h3>
+<p>AgentForge uses <strong>LangGraph</strong> to orchestrate agent execution. The runtime implements the <strong>ReAct pattern</strong> (Reason + Act):</p>
+<pre><code class="language-mermaid">graph TD
+    A[&quot;Input&quot;] --&gt;|user_input| B[&quot;Agent Node&quot;]
+    B --&gt;|model.complete&lt;br/&gt;tools=all_tools| C{&quot;Tool\nNeeded?&quot;}
+    C --&gt;|yes| D[&quot;Tool Node&quot;]
+    D --&gt;|tool result| B
+    B --&gt;|loop back| C
+    C --&gt;|no| E[&quot;Answer&quot;]
+    E --&gt; F[&quot;Output&quot;]
+
+    G[&quot;Limits:\nmax_steps\nwall_clock_s\nmax_tokens&quot;] -.-&gt;|enforce| B
+    G -.-&gt;|enforce| D
+    H[&quot;Memory&lt;br/&gt;Checkpointer&quot;] -.-&gt;|persist&lt;br/&gt;thread state| B
+    I[&quot;Trace Bus&quot;] -.-&gt;|emit events| B
+    I -.-&gt;|emit events| D
+</code></pre>
+<p><strong>Step-by-step:</strong>
+1. <strong>Start:</strong> User provides input (string)
+2. <strong>Agent node:</strong> Call the model with all available tools
+3. <strong>Router:</strong> Check the model's response
+   - If tool calls → dispatch each tool (tool nodes run in parallel)
+   - If no tool calls → done, return the answer
+4. <strong>Tool node:</strong> Execute tool, capture output
+5. <strong>Loop:</strong> Feed tool results back to agent, repeat until answer or limits hit
+6. <strong>Persist:</strong> On every exit path (success, timeout, error, client disconnect), save the run with full trace
+7. <strong>Memory:</strong> Before the first agent call, retrieve relevant memories; after answering, persist new facts</p>
+<p><strong>Limits enforcement:</strong>
+- <code>max_steps</code>: agent loop counter; stop if exceeded
+- <code>wall_clock_s</code>: wall-clock timeout; kill if exceeded
+- <code>max_tokens_total</code>: cumulative token budget across all model calls; deny further calls if exceeded</p>
+<h3 id="token-streaming">Token Streaming</h3>
+<p>The <code>/api/runs</code> endpoint returns Server-Sent Events (SSE). Token deltas stream in real-time:</p>
+<pre><code>Client                           Backend
+  │                                │
+  └──── POST /api/runs ────────────&gt;
+       (manifest, input)             │
+                                     ├─ compile_agent()
+                                     ├─ astream() begins
+                                     │
+        &lt;────── run_started ─────────┤
+        &lt;───── step:start ───────────┤
+        &lt;─── tool_call:web_search ──┤
+        &lt;─── tool_result ────────────┤
+        &lt;── token:delta='hello' ─────┤ (live text)
+        &lt;── token:delta=' world' ────┤ (live text)
+        &lt;──── step:end ──────────────┤
+        &lt;─────── answer ─────────────┤
+        &lt;── done:cost_usd ───────────┤
+                                     └─ Persist run
+</code></pre>
+<p>Events include type, timestamp, step index, and a detail payload (JSON). The frontend consumes these events to:
+- Show tool calls and results in a sidebar
+- Accumulate token deltas into the full answer text
+- Build a trace for 3D replay</p>
+<hr />
+<h2 id="unified-agent-core-modules-interfaces">Unified Agent Core: Modules &amp; Interfaces</h2>
+<p>The core (<code>packages/agent-core/src/agent_core/</code>) is organized by responsibility:</p>
+<h3 id="schemapy-manifest-agent-definitions"><code>schema.py</code> — Manifest &amp; Agent Definitions</h3>
+<ul>
+<li><code>Manifest</code>: Pydantic model for the full agent specification</li>
+<li><code>AgentRunConfig</code>: Runtime options (eval_mode, thread_id, limits)</li>
+<li><code>Agent</code>: Compiled agent; holds the LangGraph graph and checkpointer</li>
+</ul>
+<h3 id="registrypy-pluggable-registries"><code>registry.py</code> — Pluggable Registries</h3>
+<p>A unified registry interface shared by all backends:</p>
+<pre><code class="language-python">class Registry(Protocol):
+    def register(self, key: str, obj: Any) -&gt; None: ...
+    def get(self, key: str) -&gt; Any: ...
+    def list(self) -&gt; list[str]: ...
+</code></pre>
+<p>Five registries:
+1. <strong>ToolRegistry:</strong> BaseTool implementations (web_search, code_executor, etc.)
+2. <strong>ModelRegistry:</strong> ModelProvider implementations (anthropic, openai, echo)
+3. <strong>MemoryRegistry:</strong> MemoryProvider implementations (in_memory, mem0)
+4. <strong>PromptRegistry:</strong> Prompt text/templates (loaded from files)
+5. <strong>MCPRegistry:</strong> MCP server configs</p>
+<h3 id="interfacespy-core-contracts"><code>interfaces.py</code> — Core Contracts</h3>
+<p>Every backend must implement one of these protocols:</p>
+<pre><code class="language-python">class BaseTool(Protocol):
+    name: str
+    description: str
+    args_schema: type[BaseModel]  # Pydantic model
+    async def run(self, **kwargs) -&gt; ToolResult: ...
+
+class ModelProvider(Protocol):
+    async def complete(self, messages: list, tools: list, **cfg) -&gt; ModelResponse: ...
+
+class MemoryProvider(Protocol):
+    async def add(self, scope: Scope, namespace: str, items: list[MemoryItem]) -&gt; None: ...
+    async def search(self, scope: Scope, namespace: str, query: str, k: int) -&gt; list[MemoryItem]: ...
+    async def delete(self, scope: Scope, namespace: str, ids: list[str]) -&gt; None: ...
+
+class CodeExecutor(Protocol):
+    async def run(self, code: str, ctx: RunContext) -&gt; ExecResult: ...
+
+class MCPConnector(Protocol):
+    async def discover(self, server_cfg) -&gt; list[BaseTool]: ...
+</code></pre>
+<h3 id="runtimepy-langgraph-compiler"><code>runtime.py</code> — LangGraph Compiler</h3>
+<ul>
+<li><code>compile_agent(manifest, registries)</code>: manifest → LangGraph StateGraph</li>
+<li>Creates agent node (calls model)</li>
+<li>Creates tool nodes (one per tool)</li>
+<li>Wires router (tool dispatch or answer)</li>
+<li>Attaches checkpointer (thread state persistence)</li>
+<li>Returns compiled Agent</li>
+</ul>
+<h3 id="loaderpy-manifest-loading"><code>loader.py</code> — Manifest Loading</h3>
+<ul>
+<li><code>load_manifest_dict(raw_dict)</code>: Parse and validate against schema</li>
+<li><code>resolve_manifest(manifest, registries)</code>: Verify all references exist in registries</li>
+<li>Fails fast with clear error messages on unknown tools, models, prompts, etc.</li>
+</ul>
+<h3 id="models-model-providers"><code>models/</code> — Model Providers</h3>
+<ul>
+<li><code>anthropic.py</code>: Claude models (Anthropic API)</li>
+<li><code>openai.py</code>: GPT-4, GPT-4o (OpenAI API)</li>
+<li><code>echo.py</code>: Offline echo for testing (no API key needed)</li>
+</ul>
+<p>Each provider:
+1. Takes messages and tool specs
+2. Calls the API
+3. Returns structured response (text + optional tool calls)
+4. Tracks token usage</p>
+<h3 id="tools-built-in-tools"><code>tools/</code> — Built-in Tools</h3>
+<p>Each tool is a <code>BaseTool</code> with args_schema validation:</p>
+<ul>
+<li><strong><code>web_search.py</code></strong>: WebSearchTool (Tavily API)</li>
+<li>Input: query string</li>
+<li>Output: list of results (title, snippet, URL)</li>
+<li>
+<p>Use case: agents looking up current events or facts</p>
+</li>
+<li>
+<p><strong><code>code_executor.py</code></strong>: CodeExecutorTool (wraps sandbox)</p>
+</li>
+<li>Input: Python code (string)</li>
+<li>Output: stdout, stderr, return value</li>
+<li>Enforces allow_network flag and timeouts</li>
+<li>
+<p>Use case: "coder" agents writing and executing scripts</p>
+</li>
+<li>
+<p><strong><code>embedding_search.py</code></strong>: EmbeddingSearchTool (semantic search)</p>
+</li>
+<li>Input: query string</li>
+<li>Output: top-k semantically similar documents</li>
+<li>Indexes via <code>POST /api/index</code></li>
+<li>
+<p>Use case: agents searching documentation or code</p>
+</li>
+<li>
+<p><strong><code>http_fetch.py</code></strong>: HttpFetchTool</p>
+</li>
+<li>Input: URL, headers (optional)</li>
+<li>Output: response body (text)</li>
+<li>Use case: agents fetching API responses or web pages</li>
+</ul>
+<h3 id="memory-long-term-memory"><code>memory/</code> — Long-Term Memory</h3>
+<p>Agents remember facts across sessions:</p>
+<ul>
+<li><strong><code>in_memory.py</code></strong>: InMemoryMemoryProvider (default)</li>
+<li>Stores MemoryItem objects in RAM</li>
+<li>Full-text and embedding-based search</li>
+<li>
+<p>No persistence</p>
+</li>
+<li>
+<p><strong><code>mem0_provider.py</code></strong>: Mem0MemoryProvider</p>
+</li>
+<li>Integrates mem0 semantic memory API</li>
+<li>Stores facts with embeddings</li>
+<li>Namespaced by user/agent/session</li>
+<li>Persistent (external service)</li>
+</ul>
+<p>Both implement <code>MemoryProvider</code>:
+- <code>add(scope, namespace, items)</code>: Store facts
+- <code>search(scope, namespace, query, k)</code>: Retrieve relevant facts
+- <code>delete(scope, namespace, ids)</code>: Remove facts</p>
+<p><strong>Memory flow in a run:</strong>
+1. After model compiles, retrieve top-k memories: <code>memory.search(scope, namespace, input_query, k=5)</code>
+2. Inject memories into system prompt: <code>"Relevant prior knowledge: ..."</code>
+3. Agent executes normally
+4. After getting an answer, persist new facts: <code>memory.add(scope, namespace, [MemoryItem(text=learned_fact)])</code>
+5. <strong>Eval mode:</strong> Memory is isolated (all operations no-op) for determinism</p>
+<h3 id="sandbox-code-execution"><code>sandbox/</code> — Code Execution</h3>
+<p>Agents can execute code safely:</p>
+<ul>
+<li><strong><code>docker_executor.py</code></strong>: DockerCodeExecutor</li>
+<li>Spins up a Docker container per execution</li>
+<li>Deny-by-default: no host FS, no network (unless opt-in)</li>
+<li>CPU, memory, wall-clock time limits</li>
+<li>Non-root user</li>
+<li>Security matrix: 8 automated tests (all pass)</li>
+</ul>
+<p>Implements <code>CodeExecutor.run(code, ctx)</code>:
+- Returns <code>ExecResult</code>: stdout, stderr, return_value, exit_code, timed_out, artifacts</p>
+<h3 id="mcp-mcp-connector"><code>mcp/</code> — MCP Connector</h3>
+<p>Agents can use tools from external MCP servers:</p>
+<ul>
+<li><strong><code>connector.py</code></strong>: MCPConnector</li>
+<li>Connect to a server (stdio or HTTP)</li>
+<li>Discover available tools</li>
+<li>Adapt MCP tools to <code>BaseTool</code> interface</li>
+<li>Register uniformly in ToolRegistry</li>
+</ul>
+<p><strong>MCP flow:</strong>
+1. Manifest references <code>mcp_servers: [github_mcp]</code>
+2. Compiler discovers: <code>mcp.discover(server_config)</code> → list[BaseTool]
+3. Each tool auto-adapted to <code>BaseTool</code> with args_schema
+4. Registered in tool registry
+5. Agent can call them like any other tool</p>
+<h3 id="checkpointpy-thread-state-persistence"><code>checkpoint.py</code> — Thread State Persistence</h3>
+<p>Agents can maintain conversation state across multiple runs:</p>
+<ul>
+<li><strong>Default (no checkpointer):</strong> Each run is isolated; new <code>thread_id</code> per run</li>
+<li><strong>SQLite checkpointer:</strong> Save thread state locally</li>
+<li><strong>Postgres checkpointer:</strong> Share thread state across deployment</li>
+</ul>
+<p>When a client provides a <code>thread_id</code>, subsequent runs resume the same conversation. Checkpointer saves:
+- Message history
+- Tool results
+- Intermediate state</p>
+<h3 id="observabilitypy-trace-events"><code>observability.py</code> — Trace Events</h3>
+<p>Every step emits a structured <code>TraceEvent</code>:</p>
+<pre><code class="language-python">class TraceEvent(BaseModel):
+    type: str  # &quot;step_start&quot;, &quot;step_end&quot;, &quot;tool_call&quot;, &quot;tool_result&quot;, 
+               #   &quot;answer&quot;, &quot;token&quot;, &quot;error&quot;, &quot;limit&quot;
+    step: int  # Loop iteration
+    timestamp: str  # ISO 8601
+    detail: dict  # Event-specific data (tool name, output, etc.)
+    tokens: int | None  # Tokens used in this step
+    latency_ms: int | None  # Wall-clock time
+</code></pre>
+<p>Emitted on every step, tool call, token delta, and terminal state. The API streams these over SSE to the frontend.</p>
+<h3 id="guardrailspy-safety-enforcement"><code>guardrails.py</code> — Safety Enforcement</h3>
+<p>Before a tool is called, guardrails can inspect and block:</p>
+<ul>
+<li><code>NoSecretExfil</code>: Redact known secrets from tool inputs/outputs</li>
+<li><code>TimeoutGuardrail</code>: Kill runs exceeding wall_clock_s</li>
+<li>Custom guardrails: extend the interface, register in GuardrailRegistry</li>
+</ul>
+<h3 id="evalpy-evaluation-harness"><code>eval.py</code> — Evaluation Harness</h3>
+<p>The LLM analog of train/val/test (see <a href="#evaluation-harness-dev--held-out-split">Evaluation Harness</a> below).</p>
+<h3 id="run_storepy-eval_storepy-persistence"><code>run_store.py</code> &amp; <code>eval_store.py</code> — Persistence</h3>
+<ul>
+<li><strong>RunStore:</strong> Save/load <code>RunRecord</code> (full trace, tokens, cost)</li>
+<li>InMemoryRunStore (default, bounded, newest-first)</li>
+<li>PostgresRunStore (optional, durable)</li>
+<li><strong>EvalReportStore:</strong> Save/load <code>EvalReport</code> and promote baselines</li>
+<li>InMemoryEvalReportStore (default)</li>
+<li>PostgresEvalReportStore (optional)</li>
+</ul>
+<h3 id="manifest_storepy-manifest-versioning"><code>manifest_store.py</code> — Manifest Versioning</h3>
+<p>Store and retrieve manifest versions:
+- InMemoryManifestStore (default)
+- PostgresManifestStore (optional)</p>
+<p>Tracks: manifest_id, version number, YAML content, created_at</p>
+<hr />
+<h2 id="evaluation-harness-dev-held-out-split">Evaluation Harness: Dev / Held-Out Split</h2>
+<p>AgentForge implements <strong>dev/held-out evaluation</strong> — the LLM analog of train/validation/test in ML:</p>
+<pre><code>        Tasks
+           │
+      ┌────┴────┐
+      │          │
+    Dev Set   Held-Out Set
+      │          │
+      │      (never inspect)
+      │          │
+   Iterate    Baseline
+   Prompts      Report
+      │          │
+      └────┬─────┘
+           │
+     Regression Gate?
+</code></pre>
+<h3 id="concepts">Concepts</h3>
+<p><strong>Dev Set:</strong> Inspect freely while iterating prompts and tools. Fast feedback loop. Used to debug.</p>
+<p><strong>Held-Out Set:</strong> Sealed. Opened only to report final quality and detect regression. Prevents "prompt overfitting" (tuning to specific examples).</p>
+<p><strong>Disjointness Check:</strong> Dev and held-out sets must not overlap (exact or near-duplicate tasks). Automated check enforces this.</p>
+<p><strong>Scoring Modes:</strong>
+1. <strong>Programmatic:</strong> Deterministic checks (e.g., "output JSON matches schema")
+2. <strong>Rubric:</strong> Boolean assertions (e.g., "mentioned a source")
+3. <strong>LLM-as-judge:</strong> Open-ended quality (e.g., "is the answer helpful?")
+   - Fixed judge prompt + model + temperature 0
+   - Human spot-check required (PRD §14.2)
+   - Flagged for periodic audit</p>
+<h3 id="regression-gate">Regression Gate</h3>
+<p>When a manifest is updated (prompt, tools, limits):</p>
+<pre><code>1. Run eval suite (dev + held-out) with new version
+2. Compare held-out pass rate to baseline
+3. If drop &gt; tolerance (default 5%):
+   ├─ Block promotion of the new version
+   ├─ Show diff (what changed in the manifest)
+   └─ Flag for investigation
+4. If no regression:
+   ├─ Report dev vs held-out side-by-side
+   └─ Optionally promote to new baseline
+</code></pre>
+<h3 id="api">API</h3>
+<p><code>POST /api/eval</code>:</p>
+<pre><code class="language-json">{
+  &quot;manifest&quot;: { ... },
+  &quot;suite_id&quot;: &quot;suites/coder_v1&quot;,
+  &quot;baseline_held_out&quot;: { ... },  // Previous report (optional)
+  &quot;measure_flake&quot;: true          // Re-run to detect nondeterminism
+}
+</code></pre>
+<p>Returns:</p>
+<pre><code class="language-json">{
+  &quot;report_id&quot;: &quot;abc123...&quot;,
+  &quot;report&quot;: {
+    &quot;dev&quot;: {
+      &quot;pass_rate&quot;: 0.9,
+      &quot;scores&quot;: [...]
+    },
+    &quot;held_out&quot;: {
+      &quot;pass_rate&quot;: 0.85,
+      &quot;scores&quot;: [...]
+    }
+  },
+  &quot;regression&quot;: {
+    &quot;blocked&quot;: true,
+    &quot;reason&quot;: &quot;held-out pass rate dropped 0.10 (0.95 -&gt; 0.85); tolerance 0.05&quot;
+  }
+}
+</code></pre>
+<hr />
+<h2 id="multi-agent-supervisor">Multi-Agent Supervisor</h2>
+<p>Agents can delegate to other agents:</p>
+<pre><code class="language-yaml">id: supervisor
+model:
+  provider: anthropic
+  name: claude-sonnet-5
+tools: []
+sub_agents: [planner, coder, reviewer]
+</code></pre>
+<p><strong>How it works:</strong>
+1. Compiler recursively compiles sub_agents
+2. Each sub-agent exposed as a tool: <code>ask_planner</code>, <code>ask_coder</code>, <code>ask_reviewer</code>
+3. Supervisor can invoke them: "Let me ask the planner to break down the task"
+4. Sub-agent results feed back into supervisor loop</p>
+<p><strong>Safety:</strong>
+- Cycle detection: if A→B→A, fail at compile time
+- Tool name collision guard: if two agents have the same id, error
+- Sub-agent invocation counted in parent's step limit</p>
+<hr />
+<h2 id="guardrails-io-schema">Guardrails &amp; IO Schema</h2>
+<h3 id="guardrails">Guardrails</h3>
+<p>Inspect every tool call before execution and block/redact unsafe patterns:</p>
+<pre><code class="language-python">class NoSecretExfilGuardrail:
+    async def check(self, tool_name, args):
+        if any(secret in str(args.values()) for secret in os.environ.values()):
+            raise GuardrailError(&quot;secret detected in tool args&quot;)
+</code></pre>
+<p>Registered and applied per-manifest:</p>
+<pre><code class="language-yaml">guardrails: [no_secret_exfil, timeout_30s]
+</code></pre>
+<p>Shipped guardrails:
+- <code>NoSecretExfil</code>: Redact known secrets from logs and traces
+- <code>Timeout</code>: Enforce wall_clock_s limit</p>
+<h3 id="io-schema">IO Schema</h3>
+<p>Validate agent input and output against Pydantic models:</p>
+<pre><code class="language-yaml">io_schema:
+  input: UserRequest   # Must deserialize to UserRequest
+  output: AgentResult  # Must deserialize to AgentResult
+</code></pre>
+<p>If input doesn't match, fail early. If model output can't be parsed as AgentResult, error.</p>
+<hr />
+<h2 id="observability-traces">Observability &amp; Traces</h2>
+<p>Every run produces a complete trace: list of <code>TraceEvent</code> objects.</p>
+<h3 id="trace-storage">Trace Storage</h3>
+<ul>
+<li><strong>In-memory:</strong> InMemoryRunStore (bounded, newest-first)</li>
+<li><strong>Postgres:</strong> PostgresRunStore with configurable retention</li>
+<li>Keep all traces for N days</li>
+<li>For runs with &gt;100 steps, sample (every Nth step)</li>
+</ul>
+<h3 id="trace-export">Trace Export</h3>
+<p><code>GET /api/runs/{run_id}/export</code> returns the full <code>RunRecord</code>:</p>
+<pre><code class="language-json">{
+  &quot;id&quot;: &quot;abc123&quot;,
+  &quot;manifest_id&quot;: &quot;coder&quot;,
+  &quot;model&quot;: &quot;claude-sonnet-5&quot;,
+  &quot;input&quot;: &quot;write a function to sort a list&quot;,
+  &quot;status&quot;: &quot;completed&quot;,
+  &quot;answer&quot;: &quot;Here's a function...&quot;,
+  &quot;trace&quot;: [
+    { &quot;type&quot;: &quot;step_start&quot;, &quot;step&quot;: 0, ... },
+    { &quot;type&quot;: &quot;tool_call&quot;, &quot;tool&quot;: &quot;web_search&quot;, ... },
+    { &quot;type&quot;: &quot;tool_result&quot;, &quot;output&quot;: &quot;...&quot;, ... },
+    { &quot;type&quot;: &quot;step_end&quot;, &quot;step&quot;: 0, ... },
+    { &quot;type&quot;: &quot;answer&quot;, &quot;detail&quot;: &quot;Here's a function...&quot;, ... }
+  ],
+  &quot;usage&quot;: { &quot;input_tokens&quot;: 150, &quot;output_tokens&quot;: 300 },
+  &quot;cost_usd&quot;: 0.0045,
+  &quot;created_at&quot;: &quot;2026-07-10T10:00:00Z&quot;
+}
+</code></pre>
+<h3 id="cost-accounting">Cost Accounting</h3>
+<p>Tokens tracked at every step. Cost computed at end:</p>
+<pre><code>cost_usd = (input_tokens * price_per_input) + (output_tokens * price_per_output)
+</code></pre>
+<p>Prices per provider/model in a price table. Updated as API costs change.</p>
+<hr />
+<h2 id="frontend-web-ui-architecture">Frontend: Web UI Architecture</h2>
+<h3 id="agent-builder-tab">Agent Builder Tab</h3>
+<ul>
+<li>YAML editor with syntax highlighting and live validation</li>
+<li>Template gallery (examples: researcher, coder, supervisor)</li>
+<li>Run panel: stream events, show tool calls</li>
+<li>Run history: list, click to view full trace</li>
+<li>Dark/light theme toggle</li>
+</ul>
+<h3 id="3d-execution-graph">3D Execution Graph</h3>
+<ul>
+<li><strong>Three.js visualization</strong> of the agent graph</li>
+<li>Nodes: agent, tools, router</li>
+<li>Edges: message passing, tool dispatch</li>
+<li>Animation: nodes pulse on activation, edges highlight on messages</li>
+<li><strong>Timeline scrubber:</strong> click a point in time to see the agent state at that step</li>
+<li><strong>Fallbacks:</strong></li>
+<li>2D SVG rendering if WebGL unavailable</li>
+<li>Reduced-motion CSS media query respected (disables animations)</li>
+<li>Keyboard navigation: arrow keys move between nodes</li>
+</ul>
+<h3 id="eval-panel">Eval Panel</h3>
+<ul>
+<li>Dev vs held-out pass rates (side-by-side bar charts)</li>
+<li>Task-level pass/fail breakdown</li>
+<li>Regression detection (↑/↓ indicator if compared to baseline)</li>
+<li>Promote to baseline (save this eval report as the new baseline)</li>
+<li>Export report as JSON</li>
+</ul>
+<hr />
+<h2 id="data-models-persistence">Data Models (Persistence)</h2>
+<h3 id="runrecord">RunRecord</h3>
+<pre><code class="language-python">class RunRecord(BaseModel):
+    id: str                    # uuid
+    manifest_id: str           # agent id
+    model: str                 # model name
+    input: str
+    status: str                # &quot;completed&quot;, &quot;error&quot;, &quot;timeout&quot;, &quot;incomplete&quot;
+    answer: str | None
+    trace: list[TraceEvent]   # Full trace
+    usage: dict                # input_tokens, output_tokens
+    cost_usd: float
+    created_at: str            # ISO 8601
+</code></pre>
+<h3 id="manifestrecord">ManifestRecord</h3>
+<pre><code class="language-python">class ManifestRecord(BaseModel):
+    id: str                    # agent id
+    version: int               # auto-incrementing
+    manifest: dict             # Raw YAML/JSON
+    created_at: str
+</code></pre>
+<h3 id="evalreport">EvalReport</h3>
+<pre><code class="language-python">class EvalReport(BaseModel):
+    pass_rate: float           # % of tasks passed
+    scores: list[dict]        # Per-task: input, expected, output, score, reason
+    flake_rate: float         # % flakiness (re-run variance)
+
+class DevHeldOutReport(BaseModel):
+    dev: EvalReport
+    held_out: EvalReport
+</code></pre>
+<h3 id="storedbaseline">StoredBaseline</h3>
+<pre><code class="language-python">class StoredBaseline(BaseModel):
+    manifest_id: str
+    held_out: EvalReport      # The baseline (always held-out)
+    dev: EvalReport | None     # Optional dev snapshot
+    source_report_id: str     # Which eval run this came from
+    created_at: str
+</code></pre>
+<hr />
+<h2 id="extension-points-no-core-edits">Extension Points (No Core Edits)</h2>
+<h3 id="add-a-tool-15-min">Add a Tool (15 min)</h3>
+<p>Implement <code>BaseTool</code>, register:</p>
+<pre><code class="language-python">class WeatherTool(BaseTool):
+    name = &quot;weather&quot;
+    args_schema = WeatherArgs
+    async def run(self, city: str, **kwargs):
+        return ToolResult(output=f&quot;72°F in {city}&quot;)
+
+registries.tools.register(&quot;weather&quot;, WeatherTool())
+</code></pre>
+<h3 id="add-a-model-provider">Add a Model Provider</h3>
+<p>Implement <code>ModelProvider</code>, register:</p>
+<pre><code class="language-python">class LlamaProvider(ModelProvider):
+    async def complete(self, messages, tools, **cfg):
+        # Call Llama API
+        return ModelResponse(...)
+
+registries.models.register(&quot;llama&quot;, LlamaProvider())
+</code></pre>
+<h3 id="add-a-memory-backend">Add a Memory Backend</h3>
+<p>Implement <code>MemoryProvider</code>, register:</p>
+<pre><code class="language-python">class RedisMemory(MemoryProvider):
+    async def add(self, scope, namespace, items):
+        # Store in Redis
+    async def search(self, scope, namespace, query, k):
+        # Retrieve from Redis
+
+registries.memory.register(&quot;redis&quot;, RedisMemory())
+</code></pre>
+<h3 id="connect-an-mcp-server">Connect an MCP Server</h3>
+<p>Add config, connector discovers tools:</p>
+<pre><code class="language-python">mcp_config = {
+    &quot;server_type&quot;: &quot;stdio&quot;,
+    &quot;command&quot;: [&quot;python&quot;, &quot;-m&quot;, &quot;mcp_server_github&quot;]
+}
+registries.mcp.register(&quot;github_mcp&quot;, mcp_config)
+</code></pre>
+<p>All happen without touching <code>packages/agent-core</code> code. Proven by the <strong>extension-conformance test</strong> (Phase 10).</p>
+<hr />
+<h2 id="deployment-persistence">Deployment &amp; Persistence</h2>
+<h3 id="local-dev-default">Local Dev (Default)</h3>
+<ul>
+<li>In-memory stores (runs, evals, manifests)</li>
+<li>SQLite checkpointer (per-run thread state)</li>
+<li>No persistence across restarts</li>
+</ul>
+<h3 id="production-optional-postgres">Production (Optional Postgres)</h3>
+<p>Set <code>DATABASE_URL</code>:</p>
+<pre><code class="language-bash">export DATABASE_URL=postgresql://user:pass@localhost/agentforge
+</code></pre>
+<p>The API auto-detects and uses:
+- <code>PostgresRunStore</code> (durable run history)
+- <code>PostgresManifestStore</code> (version history)
+- <code>PostgresEvalReportStore</code> (eval reports + baselines)
+- Postgres checkpointer (shared thread state across deployment)</p>
+<hr />
+<h2 id="security">Security</h2>
+<h3 id="sandbox">Sandbox</h3>
+<ul>
+<li>Deny-by-default: no host FS, no network</li>
+<li>Resource limits: CPU shares, memory cap, wall-clock timeout</li>
+<li>Non-root user inside container</li>
+<li>Output size cap (stdout/stderr)</li>
+<li>Package allowlist (import restrictions)</li>
+</ul>
+<p>Verified by 8 automated security tests in CI.</p>
+<h3 id="secret-redaction">Secret Redaction</h3>
+<ul>
+<li>Before persisting: redact known secrets from traces</li>
+<li>In logs: scrub API keys, bearer tokens, etc.</li>
+<li>On the wire: SSE events scrubbed before streaming</li>
+</ul>
+<h3 id="auth-phase-11-partial">Auth (Phase 11, Partial)</h3>
+<ul>
+<li>Optional <code>AGENTFORGE_API_KEY</code> (shared key)</li>
+<li>Rate limiting: 10 runs/minute per IP (configurable)</li>
+<li>Stateless key auth (no session tracking)</li>
+</ul>
+<p>Per-user isolation (future):
+- Per-user namespaces for runs, evals, manifests, memories
+- Per-user rate limits
+- Isolated eval reports</p>
+<hr />
+<h2 id="performance-characteristics">Performance Characteristics</h2>
+<ul>
+<li><strong>Sandbox run (simple script):</strong> &lt;3s p95</li>
+<li><strong>Trace streaming latency:</strong> &lt;100ms typical</li>
+<li><strong>Eval run (10 tasks):</strong> 30–60s (depends on model latency)</li>
+<li><strong>3D graph replay:</strong> instant (from cached trace)</li>
+<li><strong>Manifest compile:</strong> &lt;100ms</li>
+</ul>
+<hr />
+<h2 id="next-steps-deferred">Next Steps / Deferred</h2>
+<ul>
+<li><strong>Per-user isolation</strong> (Phase 11 future)</li>
+<li><strong>E2B sandbox backend</strong> (Docker ships; E2B optional)</li>
+<li><strong>pgvector embeddings</strong> (in-memory vector store ships; pgvector deferred)</li>
+<li><strong>Visual manifest builder</strong> (YAML editor ships; drag-drop builder deferred)</li>
+</ul>
+<hr />
+<p><em>Last updated: 2026-07-10</em></p></div></body></html>

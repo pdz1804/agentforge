@@ -1,0 +1,153 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cross-product reuse: FloraLens runs on AgentForge's agent-core</title><style>
+:root{--bg:#fbfcfa;--panel:#fff;--ink:#182319;--muted:#566b58;--line:#dde6dc;
+--accent:#2f7a52;--accent2:#3fa06a;--code-bg:#f2f6f1;--pill:#e4f0e7}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1512;--panel:#151d17;--ink:#e8f0e8;
+--muted:#9fb3a1;--line:#2a352b;--accent:#6fce9c;--accent2:#3fa06a;--code-bg:#1b241d;--pill:#1c2e22}}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);margin:0;
+font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;
+-webkit-font-smoothing:antialiased}
+.wrap{max-width:900px;margin:0 auto;padding:48px 24px 100px}
+h1,h2,h3,h4{font-family:Georgia,"Times New Roman",serif;font-weight:600;line-height:1.25;
+letter-spacing:-.01em;margin:1.8em 0 .5em}
+h1{font-size:2.1rem;margin-top:.2em;border-bottom:2px solid var(--line);padding-bottom:.3em}
+h2{font-size:1.5rem;border-bottom:1px solid var(--line);padding-bottom:.25em}
+h3{font-size:1.2rem}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+p,li{color:var(--ink)}
+img{max-width:100%;height:auto;border:1px solid var(--line);border-radius:12px;
+box-shadow:0 6px 20px -8px rgba(24,35,25,.16);display:block;margin:18px 0}
+code{background:var(--code-bg);border:1px solid var(--line);border-radius:5px;
+padding:.12em .4em;font:.88em ui-monospace,"Cascadia Code",Consolas,monospace}
+pre{background:var(--code-bg);border:1px solid var(--line);border-radius:12px;
+padding:16px 18px;overflow-x:auto}pre code{background:none;border:0;padding:0}
+blockquote{border-left:3px solid var(--accent2);margin:1em 0;padding:.2em 0 .2em 16px;color:var(--muted)}
+table{border-collapse:collapse;width:100%;margin:18px 0;font-size:.95em;display:block;overflow-x:auto}
+th,td{border:1px solid var(--line);padding:8px 12px;text-align:left}
+th{background:var(--pill)}
+hr{border:0;border-top:1px solid var(--line);margin:2em 0}
+.toc{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:6px 18px;margin:0 0 24px}
+</style></head>
+<body><div class="wrap"><h1 id="cross-product-reuse-floralens-runs-on-agentforges-agent-core">Cross-product reuse: FloraLens runs on AgentForge's agent-core</h1>
+<p>This is the PRD's central thesis made real: the <strong>Unified Agent Core</strong>
+(<code>packages/agent-core</code>) that powers AgentForge also powers a completely
+different product — <strong>FloraLens</strong>, a botanical similarity-search app — with
+<strong>zero edits to the core</strong>. FloraLens adds one domain tool and a few YAML
+manifests; everything else (manifest schema, registries, LangGraph ReAct
+runtime, model providers, memory, guardrails, token streaming, the eval
+harness) is the <em>same code</em> AgentForge itself runs.</p>
+<blockquote>
+<p>FloraLens is the sibling repo at <code>../floralens</code>. Its own write-up of this
+integration lives in <code>floralens/docs/cross-product-reuse.md</code>.</p>
+</blockquote>
+<h2 id="how-floralens-consumes-the-core">How FloraLens consumes the core</h2>
+<p><strong>1. Editable install</strong> — FloraLens depends on <code>agent-core</code> directly, so it
+tracks the exact same source AgentForge uses:</p>
+<pre><code class="language-bash"># from the floralens repo
+pip install -e ../agentforge/packages/agent-core[openai]
+</code></pre>
+<p><strong>2. Import the public surface</strong> — FloraLens imports from <code>agent_core</code>, never
+from AgentForge's app layer:</p>
+<pre><code class="language-python"># floralens/apps/api/app/assistant_service.py
+from agent_core import (
+    AgentManifest, BaseTool, CompiledAgent, Registries, ToolResult,
+    build_default_registries, compile_agent, load_manifest_file,
+)
+</code></pre>
+<p><strong>3. Extend by registration, not modification</strong> — FloraLens builds the default
+registries (echo/openai/anthropic model providers, <code>web_search</code>,
+<code>embedding_search</code>, …) and registers exactly <strong>one</strong> domain tool of its own:</p>
+<pre><code class="language-python">def build_floralens_registries() -&gt; Registries:
+    registries = build_default_registries(prompts_dir=_PROMPTS_DIR)
+    registries.tools.register(&quot;gallery_facts&quot;, GalleryFactsTool())  # the only addition
+    return registries
+</code></pre>
+<p><code>GalleryFactsTool</code> looks a species up in FloraLens's own gallery (read-only) and
+returns curated botanical facts. It subclasses the core's <code>BaseTool</code> and returns
+a core <code>ToolResult</code> — no core file is touched.</p>
+<p><strong>4. Compile + stream with the core runtime</strong> — FloraLens loads its manifests
+and calls the same <code>compile_agent</code> + <code>astream</code> AgentForge uses; the SSE trace
+(including live token streaming) is surfaced at FloraLens's <code>POST /api/assistant</code>:</p>
+<pre><code class="language-python">def compile_naturalist(registries, checkpointer=None):
+    manifests = load_naturalist_manifests()      # naturalist + 3 sub-agents
+    return compile_agent(
+        manifests[&quot;naturalist&quot;], registries,
+        agents={&quot;identifier&quot;: ..., &quot;researcher&quot;: ..., &quot;care_advisor&quot;: ...},
+        checkpointer=checkpointer,
+    )
+</code></pre>
+<h2 id="the-naturalist-agent-team-all-yaml-no-code">The naturalist agent team (all YAML, no code)</h2>
+<p>FloraLens defines a four-role multi-agent team as manifests
+(<code>floralens/agents/*.yaml</code>) — the core's supervisor pattern exposes each
+sub-agent to the supervisor as an <code>ask_&lt;id&gt;</code> tool:</p>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>Manifest</th>
+<th>Tools</th>
+<th>Exposed to supervisor as</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Supervisor</strong></td>
+<td><code>naturalist.yaml</code></td>
+<td><code>web_search</code> (fallback)</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Identifier</strong></td>
+<td><code>identifier.yaml</code></td>
+<td><code>gallery_facts</code></td>
+<td><code>ask_identifier</code></td>
+</tr>
+<tr>
+<td><strong>Researcher</strong></td>
+<td><code>researcher.yaml</code></td>
+<td><code>web_search</code> (Tavily, cited)</td>
+<td><code>ask_researcher</code></td>
+</tr>
+<tr>
+<td><strong>Care-Advisor</strong></td>
+<td><code>care_advisor.yaml</code></td>
+<td><code>gallery_facts</code></td>
+<td><code>ask_care_advisor</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="enforced-guardrails-from-the-shared-core">Enforced guardrails from the shared core</h2>
+<p>The supervisor manifest attaches guardrails from the core's <code>GuardrailRegistry</code>
+— these are <strong>enforced at runtime</strong> on the final answer, not just prompt text:</p>
+<pre><code class="language-yaml"># floralens/agents/naturalist.yaml
+guardrails: [no_medical_dosage, educational_disclaimer, no_secret_exfil]
+</code></pre>
+<p><code>no_medical_dosage</code> replaces dosage answers with a refusal,
+<code>educational_disclaimer</code> appends the not-professional-advice note, and
+<code>no_secret_exfil</code> redacts leaked credentials — all from <code>agent_core</code>, unchanged.</p>
+<h2 id="memory">Memory</h2>
+<p>FloraLens uses the core's memory subsystem — the <code>in_memory</code> provider by default
+(swap to <code>mem0</code> via <code>FLORALENS_MEMORY_PROVIDER=mem0</code>), scoped <code>user</code> /
+namespace <code>floralens</code>, inspectable through FloraLens's <code>/api/memory</code> endpoint.
+Same provider interface, same code.</p>
+<h2 id="why-this-proves-the-thesis">Why this proves the thesis</h2>
+<ul>
+<li><strong>No core edits.</strong> FloraLens registers one tool + provides YAML manifests and
+  prompts. It never forks or patches <code>agent_core</code>. This is exactly the
+  "extend without redesign" guarantee that <code>test_extension_conformance.py</code>
+  checks (an extension must add capability with <strong>zero diffs</strong> to core files).</li>
+<li><strong>Radically different domains.</strong> AgentForge is a general agent builder;
+  FloraLens is a flower-similarity product. The same runtime, manifest schema,
+  streaming, guardrails, and eval harness serve both.</li>
+<li><strong>One place to improve.</strong> A fix or feature in <code>agent-core</code> (e.g. the token
+  streaming or guardrails added recently) reaches both products at once.</li>
+</ul>
+<h2 id="where-to-look">Where to look</h2>
+<ul>
+<li>FloraLens integration: <code>floralens/apps/api/app/assistant_service.py</code></li>
+<li>Naturalist manifests: <code>floralens/agents/{naturalist,identifier,researcher,care_advisor}.yaml</code></li>
+<li>Prompts: <code>floralens/prompts/</code></li>
+<li>The core they share: <code>agentforge/packages/agent-core/</code></li>
+</ul></div></body></html>

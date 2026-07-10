@@ -1,132 +1,252 @@
 # AgentForge
 
-Multi-Agent Workbench & Code Sandbox. See [`PRD.md`](./PRD.md) and
-[`IMPLEMENTATION-PLAN.md`](./IMPLEMENTATION-PLAN.md).
+**Multi-agent workbench for building, running, observing, and extending AI systems — all controlled by a unified declarative manifest.**
 
-## Status
+Build agents in YAML. Run them safely in a sandbox. Watch execution in 3D. Evaluate rigorously. Extend without redesign.
 
-**Phases 0–10 and 12 implemented. Phase 11 (auth/hardening) partial.**
+![Agent Builder: YAML manifest editor showing a live agent run with streaming execution trace and a 3D execution graph.](docs/assets/builder.png)
 
-- `packages/agent-core` — declarative Agent Manifest schema, pluggable registries
-  (tools / prompts / models / memory / MCP), core interfaces (`BaseTool`,
-  `ModelProvider`, `MemoryProvider`, `CodeExecutor`, `MCPConnector`), a manifest
-  loader + reference resolver, built-in Echo tool / model providers, and the
-  **LangGraph runtime** (`compile_agent` → agent↔tools loop, `TraceEvent` bus,
-  `arun` / `astream`, `max_steps` + `wall_clock_s` limits, eval-mode temp=0).
-  Model providers: **`anthropic`** and **`openai`** (both tool-use), **`echo`** (offline).
-  Tools: **`web_search`** (Tavily), **`code_executor`** (Docker sandbox, deny-by-default),
-  **`embedding_search`** (semantic search + InMemoryVectorStore), **`http_fetch`**.
-  Long-term **memory** (`InMemoryMemoryProvider` default, optional `mem0`). **MCP connector**.
-  **Multi-agent supervisor** with `sub_agents` exposed as delegation tools. **Run persistence** 
-  with full trace + token/cost accounting (`RunStore`). **Docker code sandbox** with 
-  security matrix (8-row test, passed).
-- `apps/api` — FastAPI on **port 8077** (configurable): `/health`, `/api/tools`, `/api/agents/validate`,
-  `POST /api/runs` (SSE), `GET /api/runs` + `GET /api/runs/{id}[/export]`,
-  `POST /api/sandbox/exec`, `GET/POST/DELETE /api/memory`, `POST /api/index`;
-  Dockerfile + Docker Compose.
-- `apps/web` — **Next.js 14 Agent Builder UI**: YAML manifest editor, validation, live SSE run panel,
-  trace view with **3D execution graph** (Three.js node/edge animation, timeline scrubber, reduced-motion
-  fallback), run history, **dark/light theme toggle**, **Builder/About tabs**, intro page.
-  Proxies `/api` to FastAPI backend (no CORS). Playwright e2e tests included.
-- `infra/` — Postgres + the API via Docker Compose.
+---
 
-Shipped since: Phase 9 (agent eval harness — `eval.py`, `POST /api/eval`, `eval-panel.tsx`:
-dev/held-out split, programmatic/rubric/LLM-judge scoring, regression gate); Phase 10 (CI test
-pyramid — `.github/workflows/ci.yml` + conformance/extension-conformance tests + sandbox-security
-gate); Phase 8 durable `PostgresRunStore` + retention; Phase 12 (FloraLens naturalist assistant
-runs on unmodified `agent_core`). Phase 11 is **partial**: opt-in shared-key auth
-(`AGENTFORGE_API_KEY`), rate limiting, and secret redaction in traces/logs are in place, but there
-is no per-user isolation yet (a single shared key). E2B sandbox backend still deferred (Docker executor ships).
+## Capabilities
 
-### Choosing a provider
+### Unified Agent Core
+Declare everything in one manifest: agent ID, model config, prompts, tools, memory, MCP servers, limits, evaluation suite. Load at runtime. Extend with new tools, models, or memory backends without touching core code.
 
-Set the manifest's `model.provider` to `anthropic`, `openai`, or `echo`. Provide
-the matching key in `.env` (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) and
-`TAVILY_API_KEY` for `web_search`. Add a new provider by implementing
-`ModelProvider` and registering it — no core edits.
+**What ships:**
+- Manifest schema (Pydantic-validated YAML/JSON)
+- Pluggable registries (tools, models, memory, MCP, prompts)
+- LangGraph runtime with streaming traces
+- Built-in tools: web search (Tavily), code execution (Docker sandbox), semantic search, HTTP fetch
+- Multi-agent supervisor (agents as delegation tools)
+- Long-term memory (mem0 + semantic storage)
+- MCP auto-connector (discovery + tool adaptation)
 
-## Layout
+### Live Agent Execution
+Stream agent runs over Server-Sent Events (SSE). Watch tool calls, token counts, and errors flow in real-time from backend to browser.
 
-```
-packages/agent-core/   # shared core (also consumed by FloraLens)
-apps/api/              # FastAPI backend
-apps/web/              # Next.js Agent Builder UI (manifest editor, live run panel,
-                       #   trace view, run history, 3D execution graph) + Playwright e2e
-infra/                 # docker-compose (Postgres)
-suites/                # eval task suites (Phase 9)
-```
+### 3D Execution Graph
+Visualize the agent graph and watch it execute: nodes pulse on activation, edges highlight on message/tool calls. Timeline scrubber replays the run from trace. Fallback 2D SVG for older browsers; reduced-motion support included.
 
-## Web UI (`apps/web`)
+![Eval panel showing dev vs held-out test results side-by-side with regression detection.](docs/assets/eval.png)
 
-**Next.js 14 Agent Builder** with live dashboard and 3D execution visualization.
+### Agent Evaluation Harness
+Implement the LLM analog of train/val/test:
+- **Dev/held-out split** of tasks (iterate on dev, report on held-out) — prevents prompt overfitting
+- **Scoring modes**: programmatic, rubric checks, LLM-as-judge (with mandatory human spot-checks)
+- **Deterministic runs** (temperature 0, isolated memory) for stable pass/fail
+- **Regression gate**: prompt/manifest edits re-run the suite; drops in held-out pass rate block promotion
+- Full report with dev vs held-out side-by-side comparison
 
-**Features:**
-- **Manifest Editor**: YAML editor with template gallery; real-time validation; syntax highlighting.
-- **Live Run Panel**: Stream agent execution over SSE; show tool calls, model responses, and errors in real-time.
-- **3D Execution Graph** (Phase 7): Three.js visualization of agent nodes, tool nodes, and message flow. 
-  Timeline scrubber replays the run step-by-step. Nodes pulse on activation; edges highlight tool calls.
-  2D SVG + reduced-motion fallback (no WebGL required).
-- **Run History**: List all runs (newest first) with status, model, timestamp, token usage. Click to view 
-  full trace or export JSON.
-- **Theme Toggle**: Dark/light mode with persistent preference.
-- **Tabs**: Builder (editor + run) and About (docs/help).
-- **API Proxy**: Single origin — proxies `/api` to the FastAPI backend via Next rewrites (no CORS).
+### Secure Sandbox
+Execute agent-generated Python code in an isolated Docker container with deny-by-default isolation:
+- No host filesystem or network access unless explicitly enabled
+- CPU, memory, and wall-clock time limits
+- Package allowlist for imports
+- Secret redaction in logs and traces
 
-```bash
-# Assuming API is running on :8077 (or set API_PORT in .env)
-cd apps/web
-npm install
-npm run dev              # Development server on http://localhost:3000
-npm run build && npm start  # Production build
-npx playwright test      # E2E tests (set SKIP_LIVE=1 to skip billed API calls)
-```
+Passed an 8-row security matrix (network blocking, FS denial, fork bombs, memory bombs, infinite loops, non-root enforcement, output capping, and import filtering).
+
+### Manifest Versioning & Diff
+Store and track manifest versions. View diffs between versions. Evaluate different versions against the same test suite.
+
+### Observability & Cost Accounting
+Every run produces a structured trace: steps, tool calls, model responses, latency, token usage. Export as JSON. View aggregated costs and token usage per agent and per run.
+
+---
 
 ## Quickstart
 
+### Prerequisites
+- Python 3.10+
+- Node.js 18+ (for the web UI)
+- Docker (for the sandbox)
+
+### Step 1: Backend (FastAPI on port 8077)
+
 ```bash
-# 1. Create a virtual env
+# Create a virtual environment
 python -m venv .venv
 # Windows:  .venv\Scripts\activate
 # Unix:     source .venv/bin/activate
 
-# 2. Install the core (editable) + API deps
+# Install the core and API dependencies
 pip install -e packages/agent-core
 pip install -r apps/api/requirements.txt
 
-# 3. Run the tests
-pytest packages/agent-core
-pytest apps/api
+# Run the API
+python -m uvicorn app.main:app --port 8077 --app-dir apps/api
+# -> http://localhost:8077/health
+```
 
-# 4. Run the API (port 8077 by default; configurable via API_PORT env)
-uvicorn app.main:app --reload --port 8077 --app-dir apps/api
-# -> http://127.0.0.1:8077/health
+The API auto-loads `.env` from the repo root. Live runs require `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`. The echo model works offline with no key.
 
-# 5. Run the web UI (in a new terminal)
+### Step 2: Web UI (Next.js on port 3000)
+
+In a new terminal:
+
+```bash
 cd apps/web
 npm install
 npm run dev
-# -> http://localhost:3000 (proxies API to :8077)
+# -> http://localhost:3000
+```
 
-# 6. (optional) Start Postgres for persistence
+The web app proxies `/api` to the backend — no CORS needed.
+
+### Step 3 (Optional): Persistent Storage
+
+AgentForge defaults to in-memory stores for quick demos. To persist runs, traces, and eval reports to PostgreSQL:
+
+```bash
+# Copy env template and fill in DATABASE_URL
 cp .env.example .env
+# Set: DATABASE_URL=postgresql://...
+
+# Start Postgres via Docker Compose
 docker compose -f infra/docker-compose.yml up -d
 ```
 
-## Extending the core (no core edits)
+### First Run
+
+1. Navigate to http://localhost:3000
+2. Paste a manifest into the YAML editor (or use the template gallery)
+3. Click Run to stream execution
+4. Watch the 3D graph animate
+5. Export the trace as JSON
+
+---
+
+## Architecture
+
+AgentForge consists of **three core layers**:
+
+1. **Unified Agent Core** (`packages/agent-core`): The harness — manifest schema, registries, LangGraph runtime, eval harness, tools, memory, sandbox interface.
+
+2. **FastAPI Backend** (`apps/api`): REST + SSE endpoints for agents, runs, eval, sandbox, memory, and observability. Wraps the core.
+
+3. **Next.js Frontend** (`apps/web`): Agent Builder UI — YAML editor, live run panel, 3D execution graph, run history, dark/light theme.
+
+The frontend proxies `/api` to the backend (single origin, no CORS). The backend loads the core from the same Python package that FloraLens consumes — proving the core's reusability.
+
+Read [`docs/architecture.md`](./docs/architecture.md) for a detailed breakdown with diagrams.
+
+---
+
+## Documentation
+
+- **[Architecture](./docs/architecture.md)** — System design, module structure, runtime flow, data models
+- **[API Reference](./docs/api.md)** — Every endpoint (agents, runs, eval, sandbox, memory, observability)
+- **[Cross-Product Reuse](./docs/cross-product-reuse.md)** — How FloraLens consumes the unmodified core
+- **[Product Requirements (PRD)](./PRD.md)** — Vision, goals, non-goals, detailed specs for all epics
+- **[Implementation Plan](./IMPLEMENTATION-PLAN.md)** — Phased roadmap (Phases 0–12), what shipped and when
+
+---
+
+## Status
+
+**Phases 0–10 and 12 complete. Phase 11 (auth) partial.**
+
+| Phase | Focus | Status |
+|---|---|---|
+| 0–1 | Foundation & unified core | ✓ |
+| 2–3 | LangGraph runtime & tools | ✓ |
+| 4 | Docker sandbox + security matrix | ✓ |
+| 5 | Memory (mem0 + checkpointer) | ✓ |
+| 6 | Multi-agent supervisor + UI | ✓ |
+| 7 | 3D execution graph | ✓ |
+| 8 | Traces & cost accounting | ✓ |
+| 9 | Agent eval harness (dev/held-out) | ✓ |
+| 10 | CI + test pyramid | ✓ |
+| 11 | Auth & hardening | ◐ (opt-in key auth, no per-user isolation) |
+| 12 | FloraLens integration proof | ✓ |
+
+---
+
+## Extending the Core (No Core Edits)
+
+Add a custom tool in 15 minutes, no changes to `packages/agent-core`:
 
 ```python
 from agent_core import BaseTool, ToolResult, build_default_registries
 
 class WeatherTool(BaseTool):
     name = "weather"
-    description = "Get the weather for a city."
-    args_schema = WeatherArgs      # a pydantic model
+    description = "Get the current temperature for a city."
+    args_schema = WeatherArgs  # a Pydantic model
 
-    async def run(self, **kwargs):
-        ...
-        return ToolResult(output=...)
+    async def run(self, city: str, **kwargs) -> ToolResult:
+        # Your logic here
+        return ToolResult(output=f"Temperature in {city}: 72°F")
 
+# Register it
 registries = build_default_registries()
 registries.tools.register("weather", WeatherTool())
-# Any manifest may now list `weather` under its tools.
+
+# Any manifest can now use it:
+# tools: [weather, web_search]
 ```
+
+The same pattern applies to model providers, memory backends, guardrails, and MCP connectors.
+
+---
+
+## Choose Your Model Provider
+
+Set `model.provider` in your manifest to one of:
+
+| Provider | Status | API Key |
+|---|---|---|
+| `anthropic` | ✓ Claude 3.x family | `ANTHROPIC_API_KEY` |
+| `openai` | ✓ GPT-4, GPT-4o | `OPENAI_API_KEY` |
+| `echo` | ✓ Offline (no key) | (none) |
+
+Web search requires `TAVILY_API_KEY`. See `.env.example` for all options.
+
+---
+
+## Key Files
+
+```
+packages/agent-core/              # Shared core (also consumed by FloraLens)
+├── src/agent_core/
+│   ├── schema.py                 # Manifest + Agent definitions
+│   ├── registry.py               # Pluggable registries
+│   ├── runtime.py                # LangGraph compiler & executor
+│   ├── eval.py                   # Dev/held-out harness
+│   ├── tools/                    # Built-in tools
+│   ├── models/                   # Model providers (Anthropic, OpenAI, Echo)
+│   ├── memory/                   # Long-term & short-term memory
+│   ├── sandbox/                  # Docker code executor
+│   └── mcp/                      # MCP connector
+
+apps/api/                         # FastAPI backend
+├── app/main.py                   # All endpoints
+├── app/auth.py                   # Optional API key auth
+└── requirements.txt
+
+apps/web/                         # Next.js Agent Builder
+├── app/
+│   ├── builder/                  # YAML editor + run panel
+│   ├── components/TraceGraph3D   # 3D execution visualization
+│   └── eval-panel.tsx            # Dev/held-out report view
+
+docs/                             # This documentation
+infra/docker-compose.yml          # Postgres + full stack
+suites/                           # Eval task suites
+```
+
+---
+
+## Learning Resources
+
+- **Built a tool in an afternoon:** Try adding `WeatherTool` as shown above.
+- **Ran an eval suite:** Start with the examples in `suites/`.
+- **Explored the sandbox:** See `POST /api/sandbox/exec` in the API docs.
+- **Integrated MCP:** Follow the MCP connector guide in the architecture docs.
+
+---
+
+## License
+
+See LICENSE in the repo root.
