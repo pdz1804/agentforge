@@ -68,6 +68,20 @@ from .interfaces import (
     VectorStore,
 )
 from .loader import load_manifest_dict, load_manifest_file, resolve_manifest
+from .manifest_store import (
+    InMemoryManifestStore,
+    ManifestStore,
+    ManifestVersion,
+    diff_manifest_versions,
+    select_manifest_store,
+)
+from .eval_store import (
+    EvalReportStore,
+    InMemoryEvalReportStore,
+    StoredBaseline,
+    StoredEvalReport,
+    select_eval_report_store,
+)
 from .mcp.connector import StdioMCPConnector, build_mcp_tools
 from .memory.in_memory import InMemoryMemoryProvider
 from .memory.mem0_provider import Mem0MemoryProvider
@@ -208,6 +222,18 @@ __all__ = [
     "run_suite",
     "evaluate_pair",
     "check_regression",
+    # manifest persistence + versioning (Gap G4)
+    "ManifestStore",
+    "ManifestVersion",
+    "InMemoryManifestStore",
+    "diff_manifest_versions",
+    "select_manifest_store",
+    # eval report + regression baseline persistence (Gap G5)
+    "EvalReportStore",
+    "StoredEvalReport",
+    "StoredBaseline",
+    "InMemoryEvalReportStore",
+    "select_eval_report_store",
     # checkpointer (Phase 5)
     "checkpointer_from_env",
     "in_memory_checkpointer",

@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
@@ -42,10 +42,14 @@ from agent_core import (
     RunContext,
     RunRecord,
     Scope,
+    StoredBaseline,
     build_default_registries,
     compile_agent,
+    diff_manifest_versions,
     load_manifest_dict,
     resolve_manifest,
+    select_eval_report_store,
+    select_manifest_store,
     select_run_store,
     token_cost,
     usage_totals,
@@ -95,6 +99,11 @@ registries = build_default_registries()
 # DATABASE_URL (or AGENTFORGE_RUN_STORE=postgres) is set and Postgres answers
 # at startup — a misconfigured/unreachable DB falls back rather than crashing.
 run_store = select_run_store()
+# G4/G5: manifest version history + eval report/baseline persistence. Both
+# default to their in-memory backend (same opt-in seam as the run store), so
+# the local demo and existing tests are unaffected.
+manifest_store = select_manifest_store()
+eval_report_store = select_eval_report_store()
 
 # Repo-root suites/ directory: apps/api/app/main.py -> app -> api -> apps -> root.
 # Overridable via env for deployments where the repo layout differs.
@@ -142,6 +151,102 @@ def validate_agent(req: ValidateRequest) -> ValidateResponse:
     except AgentCoreError as exc:
         return ValidateResponse(ok=False, error=str(exc))
     return ValidateResponse(ok=True, id=manifest.id)
+
+
+# --------------------------------------------------------------------------- #
+# Manifest persistence + version history (Gap G4). These routes mutate/return
+# stored agent definitions, so they sit behind require_api_key like the other
+# stateful endpoints (no-op unless AGENTFORGE_API_KEY is set). The existing
+# stateless POST /api/agents/validate above is intentionally left public and
+# unchanged.
+# --------------------------------------------------------------------------- #
+class ManifestRequest(BaseModel):
+    manifest: dict
+
+
+def _validate_manifest_or_400(raw: dict):
+    """Reuse the loader/resolver validation path; raise 400 on a bad manifest.
+
+    Same checks as /api/agents/validate — a manifest is only stored once it
+    parses and every reference resolves.
+    """
+    try:
+        manifest = load_manifest_dict(raw)
+        resolve_manifest(manifest, registries)
+    except AgentCoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return manifest
+
+
+@app.post("/api/agents", dependencies=[Depends(require_api_key)])
+async def create_agent(req: ManifestRequest) -> dict:
+    """Validate a manifest and store it as a new version (v1 for a new id)."""
+    manifest = _validate_manifest_or_400(req.manifest)
+    created_at = datetime.now(timezone.utc).isoformat()
+    record = await manifest_store.save(manifest.id, req.manifest, created_at=created_at)
+    return record.model_dump()
+
+
+@app.get("/api/agents", dependencies=[Depends(require_api_key)])
+async def list_agents() -> dict:
+    """List stored manifest ids with their current (latest) version number."""
+    ids = await manifest_store.list_ids()
+    agents = []
+    for manifest_id in ids:
+        latest = await manifest_store.get(manifest_id)
+        if latest is not None:
+            agents.append({"id": manifest_id, "latest_version": latest.version})
+    return {"agents": agents}
+
+
+@app.get("/api/agents/{manifest_id}", dependencies=[Depends(require_api_key)])
+async def get_agent(manifest_id: str, version: int | None = None) -> dict:
+    """Fetch the latest stored version, or a specific one via ``?version=N``."""
+    record = await manifest_store.get(manifest_id, version)
+    if record is None:
+        raise HTTPException(status_code=404, detail="agent (or version) not found")
+    return record.model_dump()
+
+
+@app.put("/api/agents/{manifest_id}", dependencies=[Depends(require_api_key)])
+async def update_agent(manifest_id: str, req: ManifestRequest) -> dict:
+    """Validate and store a new version of ``manifest_id``.
+
+    The manifest body's own ``id`` must match the path id — storing a manifest
+    under a mismatched id would silently fork history.
+    """
+    manifest = _validate_manifest_or_400(req.manifest)
+    if manifest.id != manifest_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"manifest id '{manifest.id}' does not match path id '{manifest_id}'",
+        )
+    created_at = datetime.now(timezone.utc).isoformat()
+    record = await manifest_store.save(manifest_id, req.manifest, created_at=created_at)
+    return record.model_dump()
+
+
+@app.get("/api/agents/{manifest_id}/versions", dependencies=[Depends(require_api_key)])
+async def list_agent_versions(manifest_id: str) -> dict:
+    """Return the full version history for ``manifest_id`` (oldest first)."""
+    versions = await manifest_store.list_versions(manifest_id)
+    if not versions:
+        raise HTTPException(status_code=404, detail="agent not found")
+    return {"manifest_id": manifest_id, "versions": [v.model_dump() for v in versions]}
+
+
+@app.get("/api/agents/{manifest_id}/diff", dependencies=[Depends(require_api_key)])
+async def diff_agent_versions(
+    manifest_id: str,
+    from_: int = Query(..., alias="from"),  # 'from' is a Python keyword; alias the query param
+    to: int = Query(...),
+) -> dict:
+    """Field + unified-text diff between two stored versions (``?from=&to=``)."""
+    older = await manifest_store.get(manifest_id, from_)
+    newer = await manifest_store.get(manifest_id, to)
+    if older is None or newer is None:
+        raise HTTPException(status_code=404, detail="agent (or version) not found")
+    return diff_manifest_versions(older, newer)
 
 
 class RunRequest(BaseModel):
@@ -470,6 +575,10 @@ class EvalRequest(BaseModel):
     # to compare this run against (PRD Section 14.3 / Epic H5).
     baseline_held_out: dict | None = None
     baseline_dev: dict | None = None
+    # Alternatively, gate against the baseline stored server-side for this
+    # manifest (Gap G5) instead of shipping it inline. The inline fields above
+    # take precedence when both are supplied.
+    use_stored_baseline: bool = False
     regression_tolerance: float = 0.05
 
     @model_validator(mode="after")
@@ -532,7 +641,19 @@ async def run_eval(req: EvalRequest) -> dict:
     except AgentCoreError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    body: dict = {"report": report.model_dump()}
+    # Persist every eval run so its report can be fetched later and promoted to
+    # a baseline (Gap G5). The generated id is returned to the caller.
+    report_id = uuid.uuid4().hex
+    await eval_report_store.save_report(
+        report_id, report, created_at=datetime.now(timezone.utc).isoformat()
+    )
+    body: dict = {"report_id": report_id, "report": report.model_dump()}
+
+    # Resolve the regression baseline from one of two sources: an inline
+    # client-supplied baseline (original contract), or the baseline stored
+    # server-side for this manifest (Gap G5). Inline wins if both are present.
+    baseline_held_out: EvalReport | None = None
+    baseline_dev: EvalReport | None = None
     if req.baseline_held_out is not None:
         # A malformed client-supplied baseline is a 422, not a 500 — validate
         # inside the handler (this runs after the try/except above closes).
@@ -545,6 +666,17 @@ async def run_eval(req: EvalRequest) -> dict:
             )
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail=f"invalid baseline report: {exc}") from exc
+    elif req.use_stored_baseline:
+        stored = await eval_report_store.get_baseline(manifest.id)
+        if stored is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"no stored baseline for manifest '{manifest.id}'; promote a report first",
+            )
+        baseline_held_out = stored.held_out
+        baseline_dev = stored.dev
+
+    if baseline_held_out is not None:
         regression = check_regression(
             report,
             baseline_held_out,
@@ -553,3 +685,37 @@ async def run_eval(req: EvalRequest) -> dict:
         )
         body["regression"] = regression.model_dump()
     return body
+
+
+@app.get("/api/eval/{report_id}", dependencies=[Depends(require_api_key)])
+async def get_eval_report(report_id: str) -> dict:
+    """Fetch a previously stored eval report by its id (Gap G5)."""
+    stored = await eval_report_store.get_report(report_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail="eval report not found")
+    return stored.model_dump()
+
+
+@app.post("/api/eval/{report_id}/promote", dependencies=[Depends(require_api_key)])
+async def promote_eval_baseline(report_id: str) -> dict:
+    """Promote a stored report's held-out split to its manifest's baseline.
+
+    After this, an eval run for the same manifest can gate against the stored
+    baseline via ``use_stored_baseline`` instead of shipping one inline.
+    """
+    stored = await eval_report_store.get_report(report_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail="eval report not found")
+    baseline = StoredBaseline(
+        manifest_id=stored.manifest_id,
+        held_out=stored.report.held_out,
+        dev=stored.report.dev,
+        source_report_id=report_id,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    await eval_report_store.set_baseline(baseline)
+    return {
+        "manifest_id": stored.manifest_id,
+        "source_report_id": report_id,
+        "baseline_pass_rate": baseline.held_out.pass_rate,
+    }
