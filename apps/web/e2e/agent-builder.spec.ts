@@ -4,7 +4,7 @@ const SHOTS = "../../../plans/260709-1427-dual-app-buildout/reports/agentforge-u
 
 test.describe("AgentForge Agent Builder UI", () => {
   test("backend online + page loads", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/app");
     await expect(page.getByRole("heading", { name: /AgentForge/ })).toBeVisible();
     // Health handshake proxied through Next to the FastAPI backend.
     await expect(page.getByTestId("health-meta")).toContainText("core", { timeout: 15_000 });
@@ -13,14 +13,14 @@ test.describe("AgentForge Agent Builder UI", () => {
   });
 
   test("validate manifest", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/app");
     await page.getByTestId("validate-btn").click();
     await expect(page.getByTestId("validity")).toHaveText("VALID", { timeout: 15_000 });
     await page.screenshot({ path: `${SHOTS}/02-validated.png`, fullPage: true });
   });
 
   test("echo run streams answer + trace + graph (deterministic)", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/app");
     // Echo template is selected by default; run it.
     await page.getByTestId("run-btn").click();
     await expect(page.getByTestId("answer")).toContainText("hello agentforge", { timeout: 30_000 });
@@ -34,7 +34,7 @@ test.describe("AgentForge Agent Builder UI", () => {
 
   test("live OpenAI + web_search run (evidence)", async ({ page }) => {
     test.skip(!!process.env.SKIP_LIVE, "live run disabled");
-    await page.goto("/");
+    await page.goto("/app");
     await page.getByTestId("template-select").selectOption("assistant");
     await page.getByTestId("run-btn").click();
     // Real model→tool→answer loop; give it time.

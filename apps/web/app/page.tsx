@@ -1,495 +1,359 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, useReducedMotion } from "motion/react";
-import yaml from "js-yaml";
-import {
-  getHealth,
-  listRuns,
-  runAgent,
-  validateManifest,
-  type Health,
-  type RunSummary,
-  type TraceEvent,
-} from "@/lib/api";
-import { TEMPLATES } from "@/lib/templates";
-import TraceGraph3D from "./TraceGraph3D";
 import ThemeToggle from "./ThemeToggle";
-import AboutPanel from "./AboutPanel";
-import EvalPanel from "./eval-panel";
 import {
+  BoltIcon,
   CheckIcon,
+  CoinIcon,
+  CubeIcon,
   DocIcon,
   GaugeIcon,
   GraphIcon,
-  HistoryIcon,
-  LayersIcon,
   LogoMark,
-  OutputIcon,
   PlayIcon,
-  StopIcon,
-  ToolIcon,
+  PlugIcon,
   TraceIcon,
 } from "./icons";
-import { cardHoverProps, streamItemProps, tabEntranceProps } from "./motion-presets";
+import { EASE, cardHoverProps, revealContainer, revealItem } from "./motion-presets";
+import styles from "./landing.module.css";
 
-type Tab = "builder" | "eval" | "about";
+// External destinations. The console lives in-app at /app; the repo + docs are
+// the public project links surfaced in the nav-less footer.
+const CONSOLE_HREF = "/app";
+const REPO_HREF = "https://github.com/pdz1804/agentforge";
+const DOCS_HREF = "https://github.com/pdz1804/agentforge/tree/main/docs";
 
-export default function Page() {
-  const [health, setHealth] = useState<Health | null>(null);
-  const [tpl, setTpl] = useState(TEMPLATES[0].key);
-  const [manifestYaml, setManifestYaml] = useState(TEMPLATES[0].yaml);
-  const [input, setInput] = useState(TEMPLATES[0].input);
-  const [evalMode, setEvalMode] = useState(TEMPLATES[0].eval_mode);
-  // Child sub-agent manifest YAMLs for the selected template (supervisor
-  // templates only). Empty for every other template, so onRun sends no
-  // `agents` and behavior is unchanged.
-  const [agentYamls, setAgentYamls] = useState<string[]>(TEMPLATES[0].agents ?? []);
-  const [validity, setValidity] = useState<{ ok: boolean; msg: string } | null>(null);
-  const [events, setEvents] = useState<TraceEvent[]>([]);
-  const [answer, setAnswer] = useState<string | null>(null);
-  const [status, setStatus] = useState<"idle" | "running" | "done" | "stopped" | "error">("idle");
-  const [runError, setRunError] = useState<string | null>(null);
-  const [cost, setCost] = useState<number | null>(null);
-  const [runs, setRuns] = useState<RunSummary[]>([]);
-  const [tab, setTab] = useState<Tab>("builder");
-  const abortRef = useRef<AbortController | null>(null);
+const REVEAL_VIEWPORT = { once: true, amount: 0.25 } as const;
+
+const FLOW = [
+  { Icon: DocIcon, title: "Author", body: "Pick a template or write a manifest, then set the input to run against." },
+  { Icon: CheckIcon, title: "Validate", body: "Check the manifest against the core schema before you spend a token." },
+  { Icon: PlayIcon, title: "Run", body: "Execute inside the Docker sandbox and stream the trace as it happens." },
+  { Icon: GraphIcon, title: "Observe", body: "Read the answer, replay the execution graph, and check the run cost." },
+];
+
+const STRENGTHS = [
+  {
+    Icon: GaugeIcon,
+    title: "Deterministic evaluation",
+    body: "Eval runs use temperature zero and isolated memory, so pass and fail stay stable across repeated attempts.",
+  },
+  {
+    Icon: CoinIcon,
+    title: "Per-run cost accounting",
+    body: "Token usage rolls up into a USD figure for each run, so you can compare configurations side by side.",
+  },
+  {
+    Icon: CubeIcon,
+    title: "Sandbox isolation",
+    body: "Generated code runs deny-by-default: no network or host filesystem access until you explicitly grant it.",
+  },
+];
+
+export default function LandingPage() {
   const reduce = useReducedMotion() ?? false;
-
-  // Roving-focus keyboard support for the tablist (Left/Right/Home/End).
-  function onTabKey(e: React.KeyboardEvent) {
-    const order: Tab[] = ["builder", "eval", "about"];
-    const i = order.indexOf(tab);
-    let next: Tab | null = null;
-    if (e.key === "ArrowRight" || e.key === "ArrowDown") next = order[(i + 1) % order.length];
-    else if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = order[(i - 1 + order.length) % order.length];
-    else if (e.key === "Home") next = order[0];
-    else if (e.key === "End") next = order[order.length - 1];
-    if (next) {
-      e.preventDefault();
-      setTab(next);
-      document.getElementById(`tab-${next}`)?.focus();
-    }
-  }
-
-  const refreshRuns = useCallback(() => {
-    listRuns(20).then(setRuns).catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    getHealth().then(setHealth).catch(() => setHealth(null));
-    refreshRuns();
-    // Abort any in-flight run stream if the page unmounts.
-    return () => abortRef.current?.abort();
-  }, [refreshRuns]);
-
-  function loadTemplate(key: string) {
-    const t = TEMPLATES.find((x) => x.key === key) ?? TEMPLATES[0];
-    setTpl(key);
-    setManifestYaml(t.yaml);
-    setInput(t.input);
-    setEvalMode(t.eval_mode);
-    setAgentYamls(t.agents ?? []);
-    setValidity(null);
-  }
-
-  function parseManifest(): unknown {
-    return yaml.load(manifestYaml);
-  }
-
-  async function onValidate() {
-    setValidity(null);
-    let manifest: unknown;
-    try {
-      manifest = parseManifest();
-    } catch (e) {
-      setValidity({ ok: false, msg: `YAML parse error: ${(e as Error).message}` });
-      return;
-    }
-    try {
-      const res = await validateManifest(manifest);
-      setValidity(
-        res.ok
-          ? { ok: true, msg: `valid — id "${res.id}"` }
-          : { ok: false, msg: res.error ?? "invalid" },
-      );
-    } catch (e) {
-      setValidity({ ok: false, msg: (e as Error).message });
-    }
-  }
-
-  async function onRun() {
-    let manifest: unknown;
-    let agents: unknown[] | undefined;
-    try {
-      manifest = parseManifest();
-      // Supervisor templates carry child manifest YAMLs; parse each with the
-      // same YAML loader as the main editor so the run endpoint's
-      // `agents: [...]` gets real dicts (RunRequest.agents in app/main.py).
-      agents = agentYamls.length ? agentYamls.map((y) => yaml.load(y)) : undefined;
-    } catch (e) {
-      setRunError(`YAML parse error: ${(e as Error).message}`);
-      setStatus("error");
-      return;
-    }
-    setEvents([]);
-    setAnswer(null);
-    setRunError(null);
-    setCost(null);
-    setStatus("running");
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-    try {
-      await runAgent(
-        { manifest, input, eval_mode: evalMode, ...(agents ? { agents } : {}) },
-        (ev) => {
-          // Live token deltas fill the answer in real time; they are NOT added
-          // to the trace/graph (which show structural steps only).
-          if (ev.type === "token") {
-            setAnswer((prev) => (prev ?? "") + (ev.detail ?? ""));
-            return;
-          }
-          setEvents((prev) => [...prev, ev]);
-          // The final "answer" event carries the authoritative full text
-          // (post-guardrails when applicable) — overwrite the streamed buffer.
-          if (ev.type === "answer") setAnswer(ev.detail ?? "");
-          if (ev.type === "error") {
-            setRunError(ev.detail ?? "error");
-            setStatus("error");
-          }
-          if (ev.type === "limit") {
-            // The run stopped without an answer (step/time budget). Surface the
-            // reason instead of silently finishing.
-            setRunError(ev.detail ?? "run stopped before answering");
-            setStatus((s) => (s === "error" ? s : "stopped"));
-          }
-          if (ev.type === "done") {
-            setCost(ev.cost_usd ?? 0);
-            setStatus((s) => (s === "error" || s === "stopped" ? s : "done"));
-          }
-        },
-        ctrl.signal,
-      );
-      setStatus((s) => (s === "error" || s === "stopped" ? s : "done"));
-    } catch (e) {
-      if ((e as Error).name !== "AbortError") {
-        setRunError((e as Error).message);
-        setStatus("error");
-      }
-    } finally {
-      // Refresh history even on abort/error — the backend may have persisted it.
-      abortRef.current = null;
-      refreshRuns();
-    }
-  }
-
-  function onStop() {
-    abortRef.current?.abort();
-    setStatus("idle");
-  }
-
-  const running = status === "running";
+  const container = reduce ? undefined : revealContainer;
+  const item = reduce ? undefined : revealItem;
+  const reveal = reduce
+    ? {}
+    : ({ initial: "hidden", whileInView: "show", viewport: REVEAL_VIEWPORT } as const);
+  const heroIn = (delay: number) =>
+    reduce
+      ? {}
+      : ({
+          initial: { opacity: 0, y: 18 },
+          animate: { opacity: 1, y: 0 },
+          transition: { duration: 0.55, ease: EASE, delay },
+        } as const);
 
   return (
-    <>
-      <div className="topbar">
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true">
-            <LogoMark />
-          </span>
-          <h1>
+    <div className={styles.page}>
+      {/* ---- Navigation ---- */}
+      <header className={styles.nav}>
+        <nav className={styles.navInner} aria-label="Primary">
+          <a className={styles.brand} href={CONSOLE_HREF}>
+            <span className={styles.brandMark} aria-hidden="true">
+              <LogoMark />
+            </span>
             AgentForge
-            <span className="brand-sub">Agent Builder</span>
-          </h1>
-        </div>
-        <span className="spacer" />
-        <span className="status-chip">
-          <span className={`dot ${health ? "ok" : ""}`} data-testid="health-dot" />
-          <span className="state">{health ? "Online" : "Offline"}</span>
-        </span>
-        <span className="meta" data-testid="health-meta">
-          {health
-            ? `core ${health.core_version} · models: ${health.models.join(", ")} · tools: ${health.tools.length}`
-            : "backend offline · core —"}
-        </span>
-        <ThemeToggle />
-      </div>
+          </a>
+          <span className={styles.navSpacer} />
+          <div className={styles.navRight}>
+            <ThemeToggle />
+            <a className={`${styles.cta} ${styles.ctaPrimary}`} href={CONSOLE_HREF}>
+              Open the console
+            </a>
+          </div>
+        </nav>
+      </header>
 
-      <div className="tabbar" role="tablist" aria-label="Primary" onKeyDown={onTabKey}>
-        <button
-          type="button"
-          role="tab"
-          id="tab-builder"
-          className="tab"
-          data-testid="tab-builder"
-          aria-selected={tab === "builder"}
-          aria-controls="panel-builder"
-          tabIndex={tab === "builder" ? 0 : -1}
-          onClick={() => setTab("builder")}
-        >
-          <LayersIcon />
-          Builder
-        </button>
-        <button
-          type="button"
-          role="tab"
-          id="tab-eval"
-          className="tab"
-          data-testid="tab-eval"
-          aria-selected={tab === "eval"}
-          aria-controls="panel-eval"
-          tabIndex={tab === "eval" ? 0 : -1}
-          onClick={() => setTab("eval")}
-        >
-          <GaugeIcon />
-          Eval
-        </button>
-        <button
-          type="button"
-          role="tab"
-          id="tab-about"
-          className="tab"
-          data-testid="tab-about"
-          aria-selected={tab === "about"}
-          aria-controls="panel-about"
-          tabIndex={tab === "about" ? 0 : -1}
-          onClick={() => setTab("about")}
-        >
-          <DocIcon />
-          About
-        </button>
-      </div>
-
-      <div
-        id="panel-eval"
-        role="tabpanel"
-        aria-labelledby="tab-eval"
-        hidden={tab !== "eval"}
-      >
-        {tab === "eval" && <EvalPanel manifestYaml={manifestYaml} />}
-      </div>
-
-      <div
-        id="panel-about"
-        role="tabpanel"
-        aria-labelledby="tab-about"
-        hidden={tab !== "about"}
-      >
-        {tab === "about" && <AboutPanel />}
-      </div>
-
-      <div
-        id="panel-builder"
-        role="tabpanel"
-        aria-labelledby="tab-builder"
-        hidden={tab !== "builder"}
-      >
-      <motion.div className="layout" {...tabEntranceProps(reduce)}>
-        {/* LEFT: authoring */}
-        <div className="col">
-          <motion.div className="card" {...cardHoverProps(reduce, false)}>
-            <h2>
-              <span className="h-ico"><DocIcon /></span>
-              Manifest
-            </h2>
-            <div className="body">
-              <div className="row">
-                <div>
-                  <label htmlFor="tpl">Template</label>
-                  <select
-                    id="tpl"
-                    data-testid="template-select"
-                    value={tpl}
-                    onChange={(e) => loadTemplate(e.target.value)}
-                  >
-                    {TEMPLATES.map((t) => (
-                      <option key={t.key} value={t.key}>
-                        {t.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <label className="toggle" htmlFor="evalmode">
-                  <input
-                    id="evalmode"
-                    type="checkbox"
-                    checked={evalMode}
-                    onChange={(e) => setEvalMode(e.target.checked)}
-                  />
-                  eval mode
-                </label>
-              </div>
-
-              <label htmlFor="manifest">YAML</label>
-              <textarea
-                id="manifest"
-                data-testid="manifest-editor"
-                value={manifestYaml}
-                onChange={(e) => setManifestYaml(e.target.value)}
-                spellCheck={false}
-              />
-
-              <div className="builder-input">
-                <label htmlFor="input">Input</label>
-                <input
-                  id="input"
-                  type="text"
-                  data-testid="run-input"
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                />
-              </div>
-
-              <div className="row builder-actions">
-                <button className="secondary" data-testid="validate-btn" onClick={onValidate}>
-                  <CheckIcon />
-                  Validate
-                </button>
-                {running ? (
-                  <button className="danger" data-testid="stop-btn" onClick={onStop}>
-                    <StopIcon />
-                    Stop
-                  </button>
-                ) : (
-                  <button data-testid="run-btn" onClick={onRun}>
-                    <PlayIcon />
-                    Run agent
-                  </button>
-                )}
-              </div>
-              {validity && (
-                <div className="validity-line">
-                  <span className={`pill ${validity.ok ? "ok" : "bad"}`} data-testid="validity">
-                    {validity.ok ? "VALID" : "INVALID"}
-                  </span>
-                  <span className="msg">{validity.msg}</span>
-                </div>
-              )}
+      {/* ---- Hero: asymmetric split, copy left, real manifest right ---- */}
+      <section className={styles.hero}>
+        <div className={styles.heroBg} aria-hidden="true" />
+        <div className={styles.heroGrid}>
+          <motion.div className={styles.heroCopy} {...heroIn(0)}>
+            <h1 className={styles.heroTitle}>
+              Build agents in YAML. <span className={styles.accent}>See every step they take.</span>
+            </h1>
+            <p className={styles.heroLede}>
+              A workbench for composing models, tools, and memory, then running each agent in a sandbox with a live
+              trace.
+            </p>
+            <div className={styles.heroActions}>
+              <a className={`${styles.cta} ${styles.ctaPrimary} ${styles.ctaLg}`} href={CONSOLE_HREF}>
+                <PlayIcon />
+                Open the console
+              </a>
+              <a className={`${styles.cta} ${styles.ctaGhost} ${styles.ctaLg}`} href={DOCS_HREF}>
+                <DocIcon />
+                Docs
+              </a>
             </div>
           </motion.div>
 
-          <motion.div className="card" {...cardHoverProps(reduce)}>
-            <h2>
-              <span className="h-ico"><HistoryIcon /></span>
-              Run history
-            </h2>
-            <div className="body hist flush" data-testid="run-history">
-              {runs.length === 0 && (
-                <p className="empty">
-                  No runs yet.
-                </p>
-              )}
-              {runs.map((r) => (
-                <div className="hist-row" key={r.id}>
-                  <span className={`pill ${r.status === "completed" ? "ok" : r.status === "error" ? "bad" : "warn"}`}>
-                    {r.status}
-                  </span>
-                  <span className="id">{r.id.slice(0, 8)}</span>
-                  <span className="ans">{r.answer ?? "—"}</span>
-                  <span className="cost">${r.cost_usd.toFixed(6)}</span>
-                </div>
-              ))}
+          <motion.div className={styles.artifact} {...heroIn(0.12)}>
+            <div className={styles.artifactHead}>
+              <span className={styles.artifactFile}>assistant.yaml</span>
+              <span className={styles.artifactTag}>manifest</span>
+            </div>
+            <pre className={styles.code}>
+              <code>
+                <span className={styles.ln}><span className={styles.yKey}>id</span><span className={styles.yPunc}>:</span> <span className={styles.yStr}>assistant</span></span>
+                <span className={styles.ln}><span className={styles.yKey}>version</span><span className={styles.yPunc}>:</span> <span className={styles.yNum}>1</span></span>
+                <span className={styles.ln}><span className={styles.yKey}>model</span><span className={styles.yPunc}>:</span></span>
+                <span className={styles.ln}>{"  "}<span className={styles.yKey}>provider</span><span className={styles.yPunc}>:</span> <span className={styles.yStr}>openai</span></span>
+                <span className={styles.ln}>{"  "}<span className={styles.yKey}>name</span><span className={styles.yPunc}>:</span> <span className={styles.yStr}>gpt-4o-mini</span></span>
+                <span className={styles.ln}>{"  "}<span className={styles.yKey}>temperature</span><span className={styles.yPunc}>:</span> <span className={styles.yNum}>0.2</span></span>
+                <span className={styles.ln}><span className={styles.yKey}>prompt_ref</span><span className={styles.yPunc}>:</span> <span className={styles.yStr}>prompts/assistant.md</span></span>
+                <span className={styles.ln}><span className={styles.yKey}>tools</span><span className={styles.yPunc}>:</span></span>
+                <span className={styles.ln}>{"  "}<span className={styles.yDash}>-</span> <span className={styles.yStr}>web_search</span></span>
+                <span className={styles.ln}><span className={styles.yKey}>limits</span><span className={styles.yPunc}>:</span></span>
+                <span className={styles.ln}>{"  "}<span className={styles.yKey}>max_steps</span><span className={styles.yPunc}>:</span> <span className={styles.yNum}>12</span></span>
+              </code>
+            </pre>
+            {/* Node/edge motif - echoes the run's model -> tool -> answer graph. */}
+            <div className={styles.motif}>
+              <svg
+                className={styles.motifSvg}
+                viewBox="0 0 320 56"
+                preserveAspectRatio="xMidYMid meet"
+                aria-hidden="true"
+              >
+                <path className={styles.motifEdge} d="M40 28 H120" />
+                <path className={styles.motifEdge} d="M140 28 H200" />
+                <path className={styles.motifEdge} d="M220 28 H280" />
+                <circle className={`${styles.motifNode} ${styles.pulse0}`} cx="28" cy="28" r="11" />
+                <circle className={`${styles.motifNode} ${styles.pulse1}`} cx="130" cy="28" r="11" />
+                <circle className={`${styles.motifNode} ${styles.pulse2}`} cx="210" cy="28" r="11" />
+                <circle className={`${styles.motifNode} ${styles.pulse3}`} cx="292" cy="28" r="11" />
+                <text className={styles.motifLabel} x="28" y="52" textAnchor="middle">start</text>
+                <text className={styles.motifLabel} x="130" y="52" textAnchor="middle">model</text>
+                <text className={styles.motifLabel} x="210" y="52" textAnchor="middle">tool</text>
+                <text className={styles.motifLabel} x="292" y="52" textAnchor="middle">answer</text>
+              </svg>
             </div>
           </motion.div>
         </div>
+      </section>
 
-        {/* RIGHT: run output + trace + 3D replay */}
-        <div className="col">
-          <motion.div className="card" {...cardHoverProps(reduce)}>
-            <h2>
-              <span className="h-ico"><OutputIcon /></span>
-              Run output
-              <span className="h-right">
-                {running && <span className="live-dot" aria-hidden="true" />}
-                <span
-                  className={`pill ${status === "done" ? "ok" : status === "error" ? "bad" : status === "running" || status === "stopped" ? "warn" : ""}`}
-                  data-testid="run-status"
-                >
-                  {status}
-                </span>
+      {/* ---- Capability bento ---- */}
+      <section className={styles.section}>
+        <div className={styles.shell}>
+          <div className={styles.sectionHead}>
+            <h2 className={styles.sectionTitle}>From manifest to trace, in one console</h2>
+            <p className={styles.sectionSub}>
+              The pieces you compose, and the parts that watch them run. Every capability below ships in the builder.
+            </p>
+          </div>
+
+          <motion.div className={styles.bento} variants={container} {...reveal}>
+            {/* Cell 1 - declarative manifests, with a real snippet */}
+            <motion.article
+              className={`${styles.cell} ${styles.cellWide}`}
+              variants={item}
+              {...cardHoverProps(reduce)}
+            >
+              <span className={styles.cellIco}><DocIcon /></span>
+              <h3 className={styles.cellTitle}>Declarative manifests</h3>
+              <p className={styles.cellBody}>
+                Describe an agent in one YAML file: model, tools, memory, and limits. Validate it against the schema
+                before anything runs.
+              </p>
+              <div className={styles.snippet}>
+                <code>
+                  <span className={styles.ln}><span className={styles.yKey}>tools</span><span className={styles.yPunc}>:</span></span>
+                  <span className={styles.ln}>{"  "}<span className={styles.yDash}>-</span> <span className={styles.yStr}>web_search</span></span>
+                  <span className={styles.ln}>{"  "}<span className={styles.yDash}>-</span> <span className={styles.yStr}>code_executor</span></span>
+                  <span className={styles.ln}><span className={styles.yKey}>memory</span><span className={styles.yPunc}>:</span> <span className={styles.yStr}>semantic</span></span>
+                </code>
+              </div>
+            </motion.article>
+
+            {/* Cell 2 - LangGraph runtime, with the node motif */}
+            <motion.article
+              className={`${styles.cell} ${styles.cellWide}`}
+              variants={item}
+              {...cardHoverProps(reduce)}
+            >
+              <span className={styles.cellIco}><TraceIcon /></span>
+              <h3 className={styles.cellTitle}>LangGraph runtime</h3>
+              <p className={styles.cellBody}>
+                A graph-based control loop drives the model, tool, and answer cycle in deterministic, inspectable steps.
+              </p>
+              <div className={styles.cellMotif}>
+                <svg className={styles.cellMotifSvg} viewBox="0 0 300 48" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+                  <path className={styles.motifEdge} d="M28 24 H120" />
+                  <path className={styles.motifEdge} d="M138 24 H206" />
+                  <path className={styles.motifEdge} d="M138 24 C170 24 170 8 138 8 C120 8 120 24 138 24" />
+                  <path className={styles.motifEdge} d="M224 24 H278" />
+                  <circle className={`${styles.motifNode} ${styles.pulse0}`} cx="24" cy="24" r="9" />
+                  <circle className={`${styles.motifNode} ${styles.pulse1}`} cx="130" cy="24" r="9" />
+                  <circle className={`${styles.motifNode} ${styles.pulse2}`} cx="214" cy="24" r="9" />
+                  <circle className={`${styles.motifNode} ${styles.pulse3}`} cx="286" cy="24" r="9" />
+                </svg>
+              </div>
+            </motion.article>
+
+            {/* Cell 3 - Docker sandbox */}
+            <motion.article className={`${styles.cell} ${styles.cellThird}`} variants={item} {...cardHoverProps(reduce)}>
+              <span className={styles.cellIco}><CubeIcon /></span>
+              <h3 className={styles.cellTitle}>Docker sandbox</h3>
+              <p className={styles.cellBody}>
+                Generated code runs in an isolated container. No host filesystem or network unless you allow it.
+              </p>
+            </motion.article>
+
+            {/* Cell 4 - Live trace + cost, tinted panel */}
+            <motion.article
+              className={`${styles.cell} ${styles.cellThird} ${styles.cellTinted}`}
+              variants={item}
+              {...cardHoverProps(reduce)}
+            >
+              <span className={styles.cellIco}><BoltIcon /></span>
+              <h3 className={styles.cellTitle}>Live trace and cost</h3>
+              <p className={styles.cellBody}>
+                Every step streams over SSE with token usage, then rolls up into a per-run cost.
+              </p>
+              <div className={styles.costStrip}>
+                <div className={styles.costRow}>
+                  <span className={`${styles.costTag} ${styles.model}`}>model</span>
+                  <span className={`${styles.costTag} ${styles.tool}`}>tool</span>
+                  <span className={`${styles.costTag} ${styles.answer}`}>answer</span>
+                </div>
+                <div className={styles.costRow}>
+                  <span className={styles.k}>cost:</span> rolled up per run in USD
+                </div>
+              </div>
+            </motion.article>
+
+            {/* Cell 5 - Eval harness */}
+            <motion.article className={`${styles.cell} ${styles.cellThird}`} variants={item} {...cardHoverProps(reduce)}>
+              <span className={styles.cellIco}><GaugeIcon /></span>
+              <h3 className={styles.cellTitle}>Eval harness</h3>
+              <p className={styles.cellBody}>
+                Grade runs on a dev and held-out split. A regression gate blocks promotion when the held-out pass rate
+                drops.
+              </p>
+            </motion.article>
+
+            {/* Cell 6 - MCP tools */}
+            <motion.article className={`${styles.cell} ${styles.cellThird}`} variants={item} {...cardHoverProps(reduce)}>
+              <span className={styles.cellIco}><PlugIcon /></span>
+              <h3 className={styles.cellTitle}>MCP tools</h3>
+              <p className={styles.cellBody}>
+                Connect MCP servers and expose their tools to an agent through the same manifest, behind stable
+                interfaces.
+              </p>
+            </motion.article>
+          </motion.div>
+        </div>
+      </section>
+
+      {/* ---- How a run works: verb-led flow ---- */}
+      <section className={styles.section}>
+        <div className={styles.shell}>
+          <div className={styles.sectionHead}>
+            <h2 className={styles.sectionTitle}>How a run works</h2>
+          </div>
+          <motion.div className={styles.flow} variants={container} {...reveal}>
+            {FLOW.map((s) => (
+              <motion.div className={styles.flowStep} key={s.title} variants={item}>
+                <span className={styles.flowIco}><s.Icon /></span>
+                <h3>{s.title}</h3>
+                <p>{s.body}</p>
+              </motion.div>
+            ))}
+          </motion.div>
+        </div>
+      </section>
+
+      {/* ---- Strengths: divided rows ---- */}
+      <section className={styles.section}>
+        <div className={styles.shell}>
+          <div className={styles.sectionHead}>
+            <h2 className={styles.sectionTitle}>Made to be inspected</h2>
+            <p className={styles.sectionSub}>
+              The details that keep a run honest, not just a demo that happened to work once.
+            </p>
+          </div>
+          <motion.div className={styles.strengths} variants={container} {...reveal}>
+            {STRENGTHS.map((s) => (
+              <motion.div className={styles.strengthRow} key={s.title} variants={item}>
+                <span className={styles.strengthIco}><s.Icon /></span>
+                <div className={styles.strengthText}>
+                  <h3>{s.title}</h3>
+                  <p>{s.body}</p>
+                </div>
+              </motion.div>
+            ))}
+          </motion.div>
+        </div>
+      </section>
+
+      {/* ---- Final CTA band ---- */}
+      <section className={styles.section}>
+        <div className={styles.shell}>
+          <div className={styles.ctaBand}>
+            <h2 className={styles.ctaBandTitle}>Open the console and author your first agent</h2>
+            <div className={styles.ctaBandActions}>
+              <a className={`${styles.cta} ${styles.ctaPrimary} ${styles.ctaLg}`} href={CONSOLE_HREF}>
+                <PlayIcon />
+                Open the console
+              </a>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ---- Footer ---- */}
+      <footer className={styles.footer}>
+        <div className={styles.footerInner}>
+          <div className={styles.footerBrand}>
+            <span className={styles.footerBrandRow}>
+              <span className={styles.brandMark} aria-hidden="true">
+                <LogoMark />
               </span>
-            </h2>
-            <div className="body">
-              {answer !== null && (
-                <motion.div className="answer" data-testid="answer" {...streamItemProps(reduce)}>
-                  <div className="lbl">
-                    <CheckIcon />
-                    Answer
-                  </div>
-                  {answer}
-                </motion.div>
-              )}
-              {runError && (
-                <p className="err" data-testid="run-error">
-                  {runError}
-                </p>
-              )}
-              {cost !== null && (
-                <p className="cost" data-testid="cost">
-                  cost: <span className="num">${cost.toFixed(6)}</span>
-                </p>
-              )}
-              {answer === null && !runError && status === "idle" && (
-                <p className="empty">
-                  <PlayIcon />
-                  Author a manifest and click <b>Run agent</b> to stream the trace.
-                </p>
-              )}
+              AgentForge
+            </span>
+            <p className={styles.footerNote}>
+              A demo build of the AgentForge workbench: author agents in YAML, run them in a sandbox, and watch the
+              trace.
+            </p>
+          </div>
+          <div className={styles.footerLinks}>
+            <div className={styles.footerCol}>
+              <span className={styles.footerColHead}>Project</span>
+              <a className={styles.footerLink} href={REPO_HREF}>GitHub</a>
+              <a className={styles.footerLink} href={DOCS_HREF}>Docs</a>
             </div>
-          </motion.div>
-
-          <motion.div className="card" {...cardHoverProps(reduce, false)}>
-            <h2>
-              <span className="h-ico"><TraceIcon /></span>
-              Trace
-            </h2>
-            <div className="body trace" data-testid="trace">
-              {events.length === 0 && (
-                <p className="empty">
-                  No events yet.
-                </p>
-              )}
-              {events.map((ev, i) => (
-                <motion.div
-                  className={`event ${ev.type}`}
-                  key={i}
-                  data-testid={`event-${ev.type}`}
-                  {...streamItemProps(reduce)}
-                >
-                  <div className="head">
-                    {ev.step != null && <span className="step">step {ev.step}</span>}
-                    <span className="node">{ev.node ?? ev.type}</span>
-                    <span className="pill">{ev.type}</span>
-                    {ev.usage && (ev.usage.input_tokens || ev.usage.output_tokens) ? (
-                      <span className="usage">
-                        {ev.usage.input_tokens ?? 0}→{ev.usage.output_tokens ?? 0} tok
-                      </span>
-                    ) : null}
-                  </div>
-                  {ev.detail && <div className="detail">{ev.detail}</div>}
-                  {ev.tool_calls?.map((tc, j) => (
-                    <div className="tc" key={j}>
-                      <ToolIcon />
-                      {tc.name}({JSON.stringify(tc.args)})
-                    </div>
-                  ))}
-                </motion.div>
-              ))}
+            <div className={styles.footerCol}>
+              <span className={styles.footerColHead}>Product</span>
+              <a className={styles.footerLink} href={CONSOLE_HREF}>Open the console</a>
             </div>
-          </motion.div>
-
-          <motion.div className="card" {...cardHoverProps(reduce, false)}>
-            <h2>
-              <span className="h-ico"><GraphIcon /></span>
-              3D execution graph
-            </h2>
-            <div className="body flush" data-testid="trace-3d">
-              <TraceGraph3D events={events} status={status} />
-            </div>
-          </motion.div>
+          </div>
         </div>
-      </motion.div>
-      </div>
-    </>
+      </footer>
+    </div>
   );
 }

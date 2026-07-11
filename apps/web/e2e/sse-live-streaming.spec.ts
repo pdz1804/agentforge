@@ -5,7 +5,7 @@ import { test, expect } from "@playwright/test";
 // bug fixed by `compress: false`). Live run → gated behind SKIP_LIVE.
 test("SSE trace renders live during the run, not only at the end", async ({ page }) => {
   test.skip(!!process.env.SKIP_LIVE, "live run disabled");
-  await page.goto("/");
+  await page.goto("/app");
   await page.getByTestId("template-select").selectOption("assistant");
   await page.getByTestId("run-input").fill("give me info about world cup 2026 right now");
   await page.getByTestId("run-btn").click();

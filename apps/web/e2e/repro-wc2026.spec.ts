@@ -14,7 +14,7 @@ test.describe("world cup 2026 query", () => {
     test.skip(!!process.env.SKIP_LIVE, "live run disabled — needs OPENAI_API_KEY + Tavily");
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(String(e)));
-    await page.goto("/");
+    await page.goto("/app");
     await page.getByTestId("template-select").selectOption("assistant");
     await page.getByTestId("run-input").fill("give me info about world cup 2026 right now ");
     await page.getByTestId("run-btn").click();
@@ -27,7 +27,7 @@ test.describe("world cup 2026 query", () => {
   test("B: step-budget exhaustion shows a clear stopped state (not error)", async ({ page }) => {
     // Live run (OpenAI + web_search). Gated behind SKIP_LIVE like case A above.
     test.skip(!!process.env.SKIP_LIVE, "live run disabled — needs OPENAI_API_KEY + Tavily");
-    await page.goto("/");
+    await page.goto("/app");
     await page.getByTestId("template-select").selectOption("assistant");
     // Force the pathological case: only one step, so the model's tool request
     // can never be answered within budget.

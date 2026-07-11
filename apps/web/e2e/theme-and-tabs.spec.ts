@@ -4,7 +4,7 @@ const SHOTS = "../../../plans/260709-1427-dual-app-buildout/reports/agentforge-u
 
 test.describe("AgentForge theme + tabs", () => {
   test("theme toggle cycles and persists; tabs switch", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/app");
     await page.screenshot({ path: `${SHOTS}/theme-dark.png`, fullPage: true });
 
     // Cycle the theme until the document is explicitly light, then verify it applied.
