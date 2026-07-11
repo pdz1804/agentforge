@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-core"
-version = "0.1.0"
+version = "0.1.1"
 description = "Unified Agent Core — declarative agent manifests, pluggable registries, and interfaces for the AgentForge harness."
 readme = "README.md"
 license = { text = "MIT" }

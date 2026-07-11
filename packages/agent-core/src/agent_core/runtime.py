@@ -9,10 +9,13 @@ LangChain's model/tool types.
 Graph shape (a minimal ReAct loop):
 
     START -> agent -> (tool_calls?) -> tools -> agent -> ... -> END
+    (budget spent without an answer: agent -> finalize -> END)
 
 ``agent`` calls the model; if it returns tool calls, ``tools`` executes them and
 loops back; otherwise the run ends with an answer. ``limits.max_steps`` bounds
-the loop; ``limits.wall_clock_s`` bounds non-streaming runs.
+the tool-using loop; when it is reached without an answer, ``finalize`` makes one
+last tool-disabled model call so the run always returns a best-effort answer
+instead of dead-ending. ``limits.wall_clock_s`` bounds non-streaming runs.
 """
 
 import asyncio
@@ -365,11 +368,80 @@ class CompiledAgent:
                 )
             return {"messages": new_messages, "pending": [], "trace": events}
 
+        async def finalize_node(state: _RunState, config: RunnableConfig | None = None) -> dict:
+            # The tool-use step budget (`max_steps`) is exhausted but the model
+            # is still mid-loop (it just requested more tools, or a tool kept
+            # failing). Rather than dead-ending the run answer-less, make ONE
+            # final model call with tools DISABLED so the model must reply in
+            # plain text with whatever it has gathered — a graceful best-effort
+            # answer instead of "stopped without an answer". This wrap-up turn
+            # does not advance `steps`, so it never itself re-triggers the loop.
+            cfg = (config or {}).get("configurable", {})
+            step = state["steps"]
+            nudge = Message(
+                role="system",
+                content=(
+                    "You have reached the tool-use step budget and may not call "
+                    "any more tools. Give your best final answer now using the "
+                    "information already gathered. If a tool failed or the task "
+                    "could not be completed, say so plainly and concisely."
+                ),
+            )
+            # The last assistant turn may carry tool_calls that were never run
+            # (the budget was hit before `tools` executed them). A provider like
+            # OpenAI rejects a history where an assistant tool_call has no matching
+            # tool result, so close each dangling call with a synthetic "skipped"
+            # result before the final, tool-disabled answer call.
+            skipped = [
+                Message(
+                    role="tool",
+                    content="Skipped: the tool-use step budget was reached before this tool ran.",
+                    tool_call_id=call.id,
+                    name=call.name,
+                )
+                for call in (state.get("pending") or [])
+            ]
+            messages = [*state["messages"], *skipped, nudge]
+            call_kwargs = dict(
+                tools=[],  # disabled: force a text answer, not another tool call
+                model=self.manifest.model.name,
+                temperature=cfg.get("temperature", self.manifest.model.temperature),
+                max_tokens=self.manifest.model.max_tokens,
+            )
+            if cfg.get("stream_tokens"):
+                writer = get_stream_writer()
+
+                def _on_token(delta: str) -> None:
+                    if delta and writer is not None:
+                        writer({"token": delta, "step": step, "node": "agent"})
+
+                resp = await self._provider.astream_complete(
+                    messages, on_token=_on_token, **call_kwargs
+                )
+            else:
+                resp = await self._provider.complete(messages, **call_kwargs)
+            answer = resp.text or (
+                f"Stopped after the tool-use step budget (max_steps={max_steps}) was "
+                "reached before the task could be finished."
+            )
+            return {
+                "messages": [Message(role="assistant", content=answer)],
+                "answer": answer,
+                "pending": [],
+                "trace": [
+                    TraceEvent(
+                        step=step, type="answer", node="agent", detail=answer, usage=resp.usage
+                    )
+                ],
+            }
+
         def route_after_agent(state: _RunState) -> str:
             if state.get("answer") is not None:
                 return END
             if state["steps"] >= max_steps:
-                return END
+                # Budget exhausted mid-loop -> force a best-effort final answer
+                # rather than returning an answer-less run.
+                return "finalize"
             if state.get("pending"):
                 return "tools"
             return END
@@ -377,9 +449,13 @@ class CompiledAgent:
         builder: StateGraph = StateGraph(_RunState)
         builder.add_node("agent", agent_node)
         builder.add_node("tools", tools_node)
+        builder.add_node("finalize", finalize_node)
         builder.add_edge(START, "agent")
-        builder.add_conditional_edges("agent", route_after_agent, {"tools": "tools", END: END})
+        builder.add_conditional_edges(
+            "agent", route_after_agent, {"tools": "tools", "finalize": "finalize", END: END}
+        )
         builder.add_edge("tools", "agent")
+        builder.add_edge("finalize", END)
         # Phase 2 default (checkpointer=None): runs are single-shot, so each
         # run starts from a fresh initial state and stays isolated (no
         # cross-run state bleed). Phase 5: an opt-in checkpointer (see

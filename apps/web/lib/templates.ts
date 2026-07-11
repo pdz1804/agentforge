@@ -35,7 +35,7 @@ prompt_ref: prompts/assistant.md
 tools:
   - web_search
 limits:
-  max_steps: 6
+  max_steps: 12
 `,
   },
   {
@@ -53,7 +53,7 @@ prompt_ref: prompts/assistant.md
 tools:
   - code_executor
 limits:
-  max_steps: 5
+  max_steps: 12
 `,
   },
 ];

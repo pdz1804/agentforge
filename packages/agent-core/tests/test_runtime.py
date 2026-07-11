@@ -68,9 +68,11 @@ def test_tool_call_executes_then_answers():
     assert tool_events[0].detail == "pinged"  # the echo tool actually ran
 
 
-def test_max_steps_limit_terminates_loop():
+def test_max_steps_forces_best_effort_answer():
+    # A model that never answers on its own — always asks for another tool call —
+    # must still terminate at the step budget AND return a best-effort answer via
+    # the finalize turn, never dead-ending answer-less.
     registries = build_default_registries()
-    # A model that never answers — always asks for another tool call.
     registries.models.register(
         "scripted",
         ScriptedModelProvider(
@@ -83,15 +85,40 @@ def test_max_steps_limit_terminates_loop():
 
     result = asyncio.run(agent.arun("go"))
 
-    assert result.stopped_reason == "max_steps"
-    assert result.answer is None
-    assert result.steps == 3  # bounded, no infinite loop
+    assert result.steps == 3  # loop is bounded — no infinite recursion
+    assert result.answer is not None  # never dead-ends without an answer
+    assert result.stopped_reason == "answer"
+    assert "max_steps" in result.answer  # the fallback explains why it stopped
 
 
-def test_astream_emits_limit_event_when_no_answer():
-    # A model that never answers (always asks for a tool) must not end the stream
-    # silently: the run has to emit a terminal ``limit`` event so callers know it
-    # stopped without an answer rather than seeing an empty, answer-less run.
+def test_finalize_uses_model_text_when_budget_reached():
+    # When the budget is hit, finalize makes one tool-disabled model call; if the
+    # model then produces text, that text is the answer.
+    registries = build_default_registries()
+    registries.models.register(
+        "scripted",
+        ScriptedModelProvider(
+            [
+                ModelResponse(tool_calls=[ToolCall(name="echo", args={"text": "a"})]),
+                ModelResponse(tool_calls=[ToolCall(name="echo", args={"text": "b"})]),
+                ModelResponse(text="Here is my best answer after running out of budget."),
+            ]
+        ),
+    )
+    manifest = load_manifest_dict(_manifest("scripted", ["echo"], max_steps=2))
+    resolve_manifest(manifest, registries)
+    agent = compile_agent(manifest, registries)
+
+    result = asyncio.run(agent.arun("go"))
+
+    assert result.steps == 2
+    assert result.answer == "Here is my best answer after running out of budget."
+    assert result.stopped_reason == "answer"
+
+
+def test_astream_forces_best_effort_answer_on_budget():
+    # The stream must not end silently on budget exhaustion: it emits a best-effort
+    # ``answer`` event (from finalize) rather than a terminal ``limit`` dead-end.
     registries = build_default_registries()
     registries.models.register(
         "scripted",
@@ -107,9 +134,9 @@ def test_astream_emits_limit_event_when_no_answer():
         return [ev async for ev in agent.astream("go")]
 
     events = asyncio.run(collect())
-    assert events[-1].type == "limit"  # terminal, explains why it stopped
-    assert "max_steps" in (events[-1].detail or "")
-    assert not any(e.type == "answer" for e in events)
+    assert any(e.type == "answer" for e in events)  # best-effort answer produced
+    assert events[-1].type == "answer"
+    assert not any(e.type == "limit" for e in events)  # no answer-less dead-end
 
 
 def test_bad_tool_args_become_recoverable_error():

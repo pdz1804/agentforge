@@ -122,7 +122,7 @@ from .tools.web_search import WebSearchArgs, WebSearchTool
 from .vectorstore.in_memory import InMemoryVectorStore
 from .vectorstore.pgvector import PgVectorStore, select_vector_store
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "__version__",
