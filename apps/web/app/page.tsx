@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { motion, useReducedMotion } from "motion/react";
 import yaml from "js-yaml";
 import {
   getHealth,
@@ -30,6 +31,7 @@ import {
   ToolIcon,
   TraceIcon,
 } from "./icons";
+import { cardHoverProps, streamItemProps, tabEntranceProps } from "./motion-presets";
 
 type Tab = "builder" | "eval" | "about";
 
@@ -52,6 +54,7 @@ export default function Page() {
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [tab, setTab] = useState<Tab>("builder");
   const abortRef = useRef<AbortController | null>(null);
+  const reduce = useReducedMotion() ?? false;
 
   // Roving-focus keyboard support for the tablist (Left/Right/Home/End).
   function onTabKey(e: React.KeyboardEvent) {
@@ -281,10 +284,10 @@ export default function Page() {
         aria-labelledby="tab-builder"
         hidden={tab !== "builder"}
       >
-      <div className="layout">
+      <motion.div className="layout" {...tabEntranceProps(reduce)}>
         {/* LEFT: authoring */}
         <div className="col">
-          <div className="card">
+          <motion.div className="card" {...cardHoverProps(reduce, false)}>
             <h2>
               <span className="h-ico"><DocIcon /></span>
               Manifest
@@ -363,9 +366,9 @@ export default function Page() {
                 </div>
               )}
             </div>
-          </div>
+          </motion.div>
 
-          <div className="card">
+          <motion.div className="card" {...cardHoverProps(reduce)}>
             <h2>
               <span className="h-ico"><HistoryIcon /></span>
               Run history
@@ -387,12 +390,12 @@ export default function Page() {
                 </div>
               ))}
             </div>
-          </div>
+          </motion.div>
         </div>
 
         {/* RIGHT: run output + trace + 3D replay */}
         <div className="col">
-          <div className="card">
+          <motion.div className="card" {...cardHoverProps(reduce)}>
             <h2>
               <span className="h-ico"><OutputIcon /></span>
               Run output
@@ -408,13 +411,13 @@ export default function Page() {
             </h2>
             <div className="body">
               {answer !== null && (
-                <div className="answer" data-testid="answer">
+                <motion.div className="answer" data-testid="answer" {...streamItemProps(reduce)}>
                   <div className="lbl">
                     <CheckIcon />
                     Answer
                   </div>
                   {answer}
-                </div>
+                </motion.div>
               )}
               {runError && (
                 <p className="err" data-testid="run-error">
@@ -433,9 +436,9 @@ export default function Page() {
                 </p>
               )}
             </div>
-          </div>
+          </motion.div>
 
-          <div className="card">
+          <motion.div className="card" {...cardHoverProps(reduce, false)}>
             <h2>
               <span className="h-ico"><TraceIcon /></span>
               Trace
@@ -447,7 +450,12 @@ export default function Page() {
                 </p>
               )}
               {events.map((ev, i) => (
-                <div className={`event ${ev.type}`} key={i} data-testid={`event-${ev.type}`}>
+                <motion.div
+                  className={`event ${ev.type}`}
+                  key={i}
+                  data-testid={`event-${ev.type}`}
+                  {...streamItemProps(reduce)}
+                >
                   <div className="head">
                     {ev.step != null && <span className="step">step {ev.step}</span>}
                     <span className="node">{ev.node ?? ev.type}</span>
@@ -465,12 +473,12 @@ export default function Page() {
                       {tc.name}({JSON.stringify(tc.args)})
                     </div>
                   ))}
-                </div>
+                </motion.div>
               ))}
             </div>
-          </div>
+          </motion.div>
 
-          <div className="card">
+          <motion.div className="card" {...cardHoverProps(reduce, false)}>
             <h2>
               <span className="h-ico"><GraphIcon /></span>
               3D execution graph
@@ -478,9 +486,9 @@ export default function Page() {
             <div className="body flush" data-testid="trace-3d">
               <TraceGraph3D events={events} status={status} />
             </div>
-          </div>
+          </motion.div>
         </div>
-      </div>
+      </motion.div>
       </div>
     </>
   );

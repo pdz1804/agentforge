@@ -1,3 +1,6 @@
+"use client";
+
+import { motion, useReducedMotion } from "motion/react";
 import {
   BoltIcon,
   CheckIcon,
@@ -10,6 +13,11 @@ import {
   PlugIcon,
   TraceIcon,
 } from "./icons";
+import { cardHoverProps, heroProps, revealContainer, revealItem } from "./motion-presets";
+
+// Shared scroll-reveal wiring for a grid/list section: gentle stagger, once
+// per mount, triggered when a quarter of the block scrolls into view.
+const REVEAL_VIEWPORT = { once: true, amount: 0.25 } as const;
 
 const PILLARS = [
   {
@@ -101,9 +109,15 @@ const STEPS = [
 ];
 
 export default function AboutPanel() {
+  const reduce = useReducedMotion() ?? false;
+  const container = reduce ? undefined : revealContainer;
+  const item = reduce ? undefined : revealItem;
+  const reveal = reduce
+    ? {}
+    : ({ initial: "hidden", whileInView: "show", viewport: REVEAL_VIEWPORT } as const);
   return (
     <div className="about" data-testid="about-page">
-      <section className="about-hero">
+      <motion.section className="about-hero" {...heroProps(reduce)}>
         <span className="about-eyebrow">
           <LogoMark />
           Unified Agent Core
@@ -122,27 +136,32 @@ export default function AboutPanel() {
           <span className="pill info">Sandboxed</span>
           <span className="pill info">Observable</span>
         </div>
-      </section>
+      </motion.section>
 
-      <div className="about-pillars">
+      <motion.div className="about-pillars" variants={container} {...reveal}>
         {PILLARS.map((p) => (
-          <article className="pillar" key={p.title}>
+          <motion.article className="pillar" key={p.title} variants={item}>
             <span className="ico">
               <p.Icon />
             </span>
             <h3>{p.title}</h3>
             <p>{p.body}</p>
-          </article>
+          </motion.article>
         ))}
-      </div>
+      </motion.div>
 
       <div className="about-section-h">
         <h3>Key capabilities</h3>
         <span className="rule" />
       </div>
-      <div className="feature-grid">
+      <motion.div className="feature-grid" variants={container} {...reveal}>
         {FEATURES.map((f) => (
-          <article className="feature" key={f.title}>
+          <motion.article
+            className="feature"
+            key={f.title}
+            variants={item}
+            {...cardHoverProps(reduce)}
+          >
             <div className="fhead">
               <span className="fico">
                 <f.Icon />
@@ -150,25 +169,25 @@ export default function AboutPanel() {
               <h4>{f.title}</h4>
             </div>
             <p>{f.body}</p>
-          </article>
+          </motion.article>
         ))}
-      </div>
+      </motion.div>
 
       <div className="about-section-h">
         <h3>How to use</h3>
         <span className="rule" />
       </div>
-      <div className="steps">
+      <motion.div className="steps" variants={container} {...reveal}>
         {STEPS.map((s, i) => (
-          <div className="step-item" key={s.title}>
+          <motion.div className="step-item" key={s.title} variants={item}>
             <span className="num">{i + 1}</span>
             <div className="stxt">
               <h4>{s.title}</h4>
               <p>{s.body}</p>
             </div>
-          </div>
+          </motion.div>
         ))}
-      </div>
+      </motion.div>
 
       <div className="about-foot">
         <CheckIcon aria-hidden="true" style={{ width: 14, height: 14, color: "var(--ok)" }} />

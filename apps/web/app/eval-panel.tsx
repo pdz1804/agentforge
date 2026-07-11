@@ -5,6 +5,7 @@
 // side. Additive UI only — it reuses the shared design tokens/classes.
 
 import { useEffect, useMemo, useState } from "react";
+import { motion, useReducedMotion } from "motion/react";
 import yaml from "js-yaml";
 import {
   listSuites,
@@ -26,6 +27,13 @@ import {
   SpinnerIcon,
   TargetIcon,
 } from "./icons";
+import {
+  cardHoverProps,
+  revealContainer,
+  revealItem,
+  streamItemProps,
+  tabEntranceProps,
+} from "./motion-presets";
 
 // A suite is "offline" (free to run) when it grades against the echo agent —
 // no LLM provider is billed. Everything else is flagged as live ($).
@@ -68,8 +76,14 @@ function prettySplit(split: string): string {
 function SplitCard({ report, held }: { report: SplitReport; held: boolean }) {
   const st = splitStats(report);
   const tasks = report.task_scores ?? [];
+  const reduce = useReducedMotion() ?? false;
   return (
-    <div className="eval-split" data-testid={`eval-split-${report.split}`}>
+    <motion.div
+      className="eval-split"
+      data-testid={`eval-split-${report.split}`}
+      variants={reduce ? undefined : revealItem}
+      {...cardHoverProps(reduce)}
+    >
       <div className="eval-split-head">
         <span className="es-ico">{held ? <TargetIcon /> : <FlaskIcon />}</span>
         <div className="es-title">
@@ -118,7 +132,7 @@ function SplitCard({ report, held }: { report: SplitReport; held: boolean }) {
           </div>
         ))}
       </div>
-    </div>
+    </motion.div>
   );
 }
 
@@ -134,10 +148,12 @@ function RegressionBanner({ reg }: { reg: RegressionVerdict }) {
   const entries = Object.entries(reg).filter(
     ([, v]) => typeof v === "string" || typeof v === "number" || typeof v === "boolean",
   );
+  const reduce = useReducedMotion() ?? false;
   return (
-    <div
+    <motion.div
       className={`eval-regression ${verdict === false ? "bad" : verdict === true ? "ok" : ""}`}
       data-testid="eval-regression"
+      {...streamItemProps(reduce)}
     >
       <div className="er-head">
         <GaugeIcon />
@@ -158,7 +174,7 @@ function RegressionBanner({ reg }: { reg: RegressionVerdict }) {
           ))}
         </div>
       )}
-    </div>
+    </motion.div>
   );
 }
 
@@ -306,9 +322,10 @@ export default function EvalPanel({ manifestYaml }: { manifestYaml: string }) {
   }
 
   const running = status === "running";
+  const reduce = useReducedMotion() ?? false;
 
   return (
-    <div className="eval" data-testid="eval-panel">
+    <motion.div className="eval" data-testid="eval-panel" {...tabEntranceProps(reduce)}>
       <div className="eval-wrap">
         {/* ---- Controls ---- */}
         <div className="card">
@@ -458,10 +475,15 @@ export default function EvalPanel({ manifestYaml }: { manifestYaml: string }) {
             {status === "done" && result && (
               <>
                 {result.regression && <RegressionBanner reg={result.regression} />}
-                <div className="eval-splits">
+                <motion.div
+                  className="eval-splits"
+                  variants={reduce ? undefined : revealContainer}
+                  initial={reduce ? false : "hidden"}
+                  animate={reduce ? undefined : "show"}
+                >
                   <SplitCard report={result.report.dev} held={false} />
                   <SplitCard report={result.report.held_out} held />
-                </div>
+                </motion.div>
 
                 {result.report_id && (
                   <div className="eval-gate">
@@ -562,6 +584,6 @@ export default function EvalPanel({ manifestYaml }: { manifestYaml: string }) {
           </div>
         </div>
       </div>
-    </div>
+    </motion.div>
   );
 }

@@ -78,6 +78,9 @@
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-2: 0 4px 16px -4px rgba(0, 0, 0, 0.5);
   --shadow-glow: 0 0 0 1px var(--primary-strong), 0 6px 20px -6px var(--primary-glow);
+  /* Quiet, primary-tinted lift used on card :hover (paired with the motion
+     translateY). Subtle — these are work surfaces. */
+  --shadow-lift: 0 10px 26px -12px var(--primary-glow), 0 3px 10px -4px rgba(0, 0, 0, 0.5);
 
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
   --dur: 180ms;
@@ -146,6 +149,7 @@
   --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06);
   --shadow-2: 0 6px 20px -6px rgba(16, 24, 40, 0.12);
   --shadow-glow: 0 0 0 1px var(--primary-strong), 0 8px 22px -8px var(--primary-glow);
+  --shadow-lift: 0 12px 28px -14px var(--primary-glow), 0 3px 10px -6px rgba(16, 24, 40, 0.12);
 
   --app-bg:
     radial-gradient(1000px 520px at 84% -10%, rgba(79, 70, 229, 0.05), transparent 62%),
@@ -192,6 +196,7 @@
     --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06);
     --shadow-2: 0 6px 20px -6px rgba(16, 24, 40, 0.12);
     --shadow-glow: 0 0 0 1px var(--primary-strong), 0 8px 22px -8px var(--primary-glow);
+    --shadow-lift: 0 12px 28px -14px var(--primary-glow), 0 3px 10px -6px rgba(16, 24, 40, 0.12);
 
     --app-bg:
       radial-gradient(1000px 520px at 84% -10%, rgba(79, 70, 229, 0.05), transparent 62%),
@@ -213,6 +218,7 @@ body {
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 /* Smooth cross-fade when the theme flips (structural containers only, so
@@ -295,7 +301,10 @@ a:hover { text-decoration: underline; }
   padding-left: 9px;
   border-left: 1px solid var(--line-strong);
 }
-@media (max-width: 560px) {
+/* Keep the topbar a single ~--topbar-h row on tablet/mobile: the supplementary
+   sub-label + backend meta are the first to drop. This prevents the topbar from
+   wrapping taller than --topbar-h, which the sticky tabbar hangs beneath. */
+@media (max-width: 768px) {
   .brand-sub { display: none; }
   .topbar .meta { display: none; }
 }
@@ -371,6 +380,13 @@ a:hover { text-decoration: underline; }
   border-radius: var(--r-lg);
   overflow: hidden;
   box-shadow: var(--shadow-1);
+  /* motion.* animates the translateY/tap; CSS carries the tinted lift shadow +
+     border on hover. Reduced-motion (media query below) snaps these. */
+  transition: box-shadow var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.card:hover {
+  box-shadow: var(--shadow-lift);
+  border-color: var(--line-strong);
 }
 
 .card > h2 {
@@ -605,7 +621,6 @@ button.secondary:disabled:hover { background: var(--panel-2); }
   word-break: break-word;
   color: var(--ink);
   line-height: 1.6;
-  animation: rise var(--dur) var(--ease);
 }
 .answer .lbl {
   /* Block-level (not inline-flex) so the label sits on its own line above the
@@ -687,7 +702,6 @@ button.secondary:disabled:hover { background: var(--panel-2); }
   border-radius: var(--r-sm);
   padding: 9px 11px;
   background: var(--panel-2);
-  animation: rise var(--dur) var(--ease);
 }
 .event.model { border-left-color: var(--primary); }
 .event.tool { border-left-color: var(--warn); }
@@ -980,7 +994,6 @@ button.secondary:disabled:hover { background: var(--panel-2); }
   max-width: 1040px;
   margin: 0 auto;
   padding: 26px 22px 48px;
-  animation: rise var(--dur) var(--ease);
 }
 @media (max-width: 560px) { .about { padding: var(--space-5) 14px 36px; } }
 
@@ -1094,20 +1107,19 @@ button.secondary:disabled:hover { background: var(--panel-2); }
   gap: var(--space-3);
 }
 @media (max-width: 820px) { .feature-grid { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 520px) { .feature-grid { grid-template-columns: 1fr; } }
+@media (max-width: 640px) { .feature-grid { grid-template-columns: 1fr; } }
 .feature {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--panel);
   padding: var(--space-4);
   box-shadow: var(--shadow-1);
-  transition: border-color var(--dur) var(--ease), transform var(--dur) var(--ease),
-    box-shadow var(--dur) var(--ease);
+  /* motion.* owns the translateY lift; CSS keeps the border + tinted shadow. */
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
 .feature:hover {
   border-color: var(--line-strong);
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-2);
+  box-shadow: var(--shadow-lift);
 }
 .feature .fhead { display: flex; align-items: center; gap: 9px; margin-bottom: 9px; }
 .feature .fico {
@@ -1177,9 +1189,6 @@ button.secondary:disabled:hover { background: var(--panel-2); }
 /* =====================================================================
    Eval report view (Eval tab)
    ===================================================================== */
-.eval {
-  animation: rise var(--dur) var(--ease);
-}
 .eval-wrap {
   display: flex;
   flex-direction: column;
@@ -1254,6 +1263,12 @@ button.secondary:disabled:hover { background: var(--panel-2); }
   border-radius: var(--r-md);
   background: var(--panel-2);
   overflow: hidden;
+  /* motion.* owns the hover translateY; CSS keeps the tinted lift shadow. */
+  transition: box-shadow var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.eval-split:hover {
+  box-shadow: var(--shadow-lift);
+  border-color: var(--line-strong);
 }
 .eval-split-head {
   display: flex;
@@ -1426,3 +1441,19 @@ button.secondary:disabled:hover { background: var(--panel-2); }
 }
 .erf-k { color: var(--muted); text-transform: capitalize; }
 .erf-v { color: var(--ink); font-weight: 600; }
+
+/* =====================================================================
+   Mobile hardening — comfortable tap targets (≥40px) and controls.
+   Layout stacking is handled by the per-component breakpoints above.
+   ===================================================================== */
+@media (max-width: 768px) {
+  /* WCAG-friendly touch sizes for the interactive chrome + form controls. */
+  button { min-height: 40px; }
+  .tab { min-height: 44px; }
+  .icon-btn { width: 40px; height: 40px; }
+  select,
+  input[type="text"] { min-height: 40px; }
+  /* The trace list gives up more of the viewport before it starts scrolling. */
+  .trace { max-height: 60vh; }
+  .graph-box { height: 220px; }
+}
