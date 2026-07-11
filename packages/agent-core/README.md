@@ -27,7 +27,7 @@ proving one runtime can serve very different products.
 ## Install
 
 ```bash
-pip install "agent-core[openai]"      # + OpenAI provider
+pip install "pdz-agent-core[openai]"   # + OpenAI provider; imported as `agent_core`
 # extras: [anthropic] [mem0] [mcp] [dev]
 ```
 

@@ -1,10 +1,11 @@
 name: Release (PyPI)
 
-# Publishes the agent-core distribution to PyPI on a version tag using PyPI
-# Trusted Publishing (OIDC) -- no API token or long-lived secret is stored in
-# this repository. One-time setup on pypi.org is required (a "pending
-# publisher" for project `agent-core`, repo `pdz1804/agentforge`, workflow
-# `release.yml`, environment `pypi`); see docs/release.md.
+# Publishes the agent-core distribution (PyPI name `pdz-agent-core`, imported
+# as `agent_core`) to PyPI on a version tag using PyPI Trusted Publishing
+# (OIDC) -- no API token or long-lived secret is stored in this repository.
+# One-time setup on pypi.org is required (a "pending publisher" for project
+# `pdz-agent-core`, repo `pdz1804/agentforge`, workflow `release.yml`,
+# environment `pypi`); see docs/release.md.
 on:
   push:
     tags:
@@ -67,7 +68,7 @@ jobs:
     # if desired. Never run on forks.
     environment:
       name: pypi
-      url: https://pypi.org/p/agent-core
+      url: https://pypi.org/p/pdz-agent-core
     permissions:
       # OIDC token minting for Trusted Publishing. No PyPI secret needed.
       id-token: write

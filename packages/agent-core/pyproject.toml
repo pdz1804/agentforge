@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agent-core"
+name = "pdz-agent-core"
 version = "0.1.2"
 description = "Unified Agent Core — declarative agent manifests, pluggable registries, and interfaces for the AgentForge harness."
 readme = "README.md"
