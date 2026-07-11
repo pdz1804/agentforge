@@ -1,8 +1,12 @@
 # AgentForge
 
+[![PyPI](https://img.shields.io/pypi/v/pdz-agent-core)](https://pypi.org/project/pdz-agent-core/)
+
 **Multi-agent workbench for building, running, observing, and extending AI systems — all controlled by a unified declarative manifest.**
 
 Build agents in YAML. Run them safely in a sandbox. Watch execution in 3D. Evaluate rigorously. Extend without redesign.
+
+![AgentForge landing page: marketing hero showcasing the multi-agent workbench for building and observing AI systems.](docs/assets/landing.png)
 
 ![Agent Builder: YAML manifest editor showing a live agent run with streaming execution trace and a 3D execution graph.](docs/assets/builder.png)
 
@@ -70,8 +74,14 @@ python -m venv .venv
 # Windows:  .venv\Scripts\activate
 # Unix:     source .venv/bin/activate
 
-# Install the core and API dependencies
+# Install agent-core (choose one):
+# Option A: Local development (editable install)
 pip install -e packages/agent-core
+
+# Option B: From PyPI (with optional extras)
+pip install pdz-agent-core  # or: pdz-agent-core[openai,anthropic,mcp]
+
+# Install API dependencies
 pip install -r apps/api/requirements.txt
 
 # Run the API
@@ -89,10 +99,10 @@ In a new terminal:
 cd apps/web
 npm install
 npm run dev
-# -> http://localhost:3000
+# -> http://localhost:3000/app (console)
 ```
 
-The web app proxies `/api` to the backend — no CORS needed.
+The marketing landing page is served at `/` and the Agent Builder console at `/app`. The web app proxies `/api` to the backend — no CORS needed.
 
 ### Step 3 (Optional): Persistent Storage
 
@@ -109,7 +119,7 @@ docker compose -f infra/docker-compose.yml up -d
 
 ### First Run
 
-1. Navigate to http://localhost:3000
+1. Navigate to http://localhost:3000/app
 2. Paste a manifest into the YAML editor (or use the template gallery)
 3. Click Run to stream execution
 4. Watch the 3D graph animate
@@ -139,7 +149,13 @@ Read [`docs/architecture.md`](./docs/architecture.md) for a detailed breakdown w
 - **[API Reference](./docs/api.md)** — Every endpoint (agents, runs, eval, sandbox, memory, observability)
 - **[Cross-Product Reuse](./docs/cross-product-reuse.md)** — How FloraLens consumes the unmodified core
 - **[Product Requirements (PRD)](./PRD.md)** — Vision, goals, non-goals, detailed specs for all epics
-- **[Implementation Plan](./IMPLEMENTATION-PLAN.md)** — Phased roadmap (Phases 0–12), what shipped and when
+- **[Implementation Plan](./IMPLEMENTATION-PLAN.md)** — Phased roadmap (Phases 0-12), what shipped and when
+
+---
+
+## Roadmap
+
+See [docs/roadmap.md](./docs/roadmap.md) for the full vision organized as Now / Next / Later, including UI-testability wiring, doc reconciliation, integrations, and platform hardening. Current focus: finish what the docs promise and reconcile architecture claims with code.
 
 ---
 

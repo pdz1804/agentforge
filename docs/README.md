@@ -44,7 +44,7 @@ Welcome to the AgentForge documentation. Start here to understand the system, bu
 1. Read [Architecture: Agent Manifest](./architecture.md#agent-manifest-and-runtime)
 2. Start the API: `python -m uvicorn app.main:app --port 8077 --app-dir apps/api`
 3. Start the web UI: `cd apps/web && npm run dev`
-4. Visit http://localhost:3000 and paste a manifest into the editor
+4. Visit http://localhost:3000/app and paste a manifest into the editor
 5. Click Run and watch the 3D graph execute
 
 ### Add a Custom Tool
