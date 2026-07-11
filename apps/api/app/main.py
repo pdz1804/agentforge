@@ -159,6 +159,29 @@ def list_tools() -> dict:
     return {"tools": registries.tools.list()}
 
 
+@app.get("/api/mcp")
+def list_mcp_servers() -> dict:
+    """List registered MCP servers (PRD Section 11) so a manifest author knows
+    which ``mcp_servers`` names are available to reference.
+
+    Public, like ``/api/tools`` — only the command + the NAMES of any
+    configured env keys are returned, never the env values (which may hold an
+    auth token for a private server registered via ``AGENTFORGE_MCP_SERVERS``).
+    """
+    servers = []
+    for name in registries.mcp.list():
+        config = getattr(registries.mcp.get(name), "config", {}) or {}
+        env = config.get("env") or {}
+        servers.append(
+            {
+                "name": name,
+                "command": config.get("command", ""),
+                "configured_env": sorted(env.keys()) if isinstance(env, dict) else [],
+            }
+        )
+    return {"servers": servers}
+
+
 # --------------------------------------------------------------------------- #
 # Per-user auth scaffold (this phase): backend-only user resolution + data
 # isolation. NOT a login system — there is no signup/password/session flow.

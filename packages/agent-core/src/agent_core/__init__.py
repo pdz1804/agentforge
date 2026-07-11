@@ -118,11 +118,12 @@ from .schema import (
 from .tools.code_executor import CodeExecArgs, CodeExecutorTool
 from .tools.echo import EchoArgs, EchoTool
 from .tools.embedding_search import EmbeddingSearchArgs, EmbeddingSearchTool
+from .tools.http_fetch import HttpFetchArgs, HttpFetchTool
 from .tools.web_search import WebSearchArgs, WebSearchTool
 from .vectorstore.in_memory import InMemoryVectorStore
 from .vectorstore.pgvector import PgVectorStore, select_vector_store
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 __all__ = [
     "__version__",
@@ -179,6 +180,8 @@ __all__ = [
     "DockerCodeExecutor",
     "EmbeddingSearchTool",
     "EmbeddingSearchArgs",
+    "HttpFetchTool",
+    "HttpFetchArgs",
     "InMemoryVectorStore",
     "PgVectorStore",
     "select_vector_store",

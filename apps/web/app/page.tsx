@@ -39,6 +39,10 @@ export default function Page() {
   const [manifestYaml, setManifestYaml] = useState(TEMPLATES[0].yaml);
   const [input, setInput] = useState(TEMPLATES[0].input);
   const [evalMode, setEvalMode] = useState(TEMPLATES[0].eval_mode);
+  // Child sub-agent manifest YAMLs for the selected template (supervisor
+  // templates only). Empty for every other template, so onRun sends no
+  // `agents` and behavior is unchanged.
+  const [agentYamls, setAgentYamls] = useState<string[]>(TEMPLATES[0].agents ?? []);
   const [validity, setValidity] = useState<{ ok: boolean; msg: string } | null>(null);
   const [events, setEvents] = useState<TraceEvent[]>([]);
   const [answer, setAnswer] = useState<string | null>(null);
@@ -82,6 +86,7 @@ export default function Page() {
     setManifestYaml(t.yaml);
     setInput(t.input);
     setEvalMode(t.eval_mode);
+    setAgentYamls(t.agents ?? []);
     setValidity(null);
   }
 
@@ -112,8 +117,13 @@ export default function Page() {
 
   async function onRun() {
     let manifest: unknown;
+    let agents: unknown[] | undefined;
     try {
       manifest = parseManifest();
+      // Supervisor templates carry child manifest YAMLs; parse each with the
+      // same YAML loader as the main editor so the run endpoint's
+      // `agents: [...]` gets real dicts (RunRequest.agents in app/main.py).
+      agents = agentYamls.length ? agentYamls.map((y) => yaml.load(y)) : undefined;
     } catch (e) {
       setRunError(`YAML parse error: ${(e as Error).message}`);
       setStatus("error");
@@ -128,7 +138,7 @@ export default function Page() {
     abortRef.current = ctrl;
     try {
       await runAgent(
-        { manifest, input, eval_mode: evalMode },
+        { manifest, input, eval_mode: evalMode, ...(agents ? { agents } : {}) },
         (ev) => {
           // Live token deltas fill the answer in real time; they are NOT added
           // to the trace/graph (which show structural steps only).
