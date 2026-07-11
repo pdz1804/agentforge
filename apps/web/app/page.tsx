@@ -316,7 +316,7 @@ export default function Page() {
                 spellCheck={false}
               />
 
-              <div style={{ marginTop: 12 }}>
+              <div className="builder-input">
                 <label htmlFor="input">Input</label>
                 <input
                   id="input"
@@ -327,7 +327,7 @@ export default function Page() {
                 />
               </div>
 
-              <div className="row" style={{ marginTop: 14, marginBottom: 0 }}>
+              <div className="row builder-actions">
                 <button className="secondary" data-testid="validate-btn" onClick={onValidate}>
                   <CheckIcon />
                   Validate
@@ -360,9 +360,9 @@ export default function Page() {
               <span className="h-ico"><HistoryIcon /></span>
               Run history
             </h2>
-            <div className="body hist" style={{ padding: 0 }} data-testid="run-history">
+            <div className="body hist flush" data-testid="run-history">
               {runs.length === 0 && (
-                <p className="empty" style={{ padding: 14 }}>
+                <p className="empty">
                   No runs yet.
                 </p>
               )}
@@ -432,7 +432,7 @@ export default function Page() {
             </h2>
             <div className="body trace" data-testid="trace">
               {events.length === 0 && (
-                <p className="empty" style={{ margin: 0 }}>
+                <p className="empty">
                   No events yet.
                 </p>
               )}
@@ -465,7 +465,7 @@ export default function Page() {
               <span className="h-ico"><GraphIcon /></span>
               3D execution graph
             </h2>
-            <div className="body" style={{ padding: 0 }} data-testid="trace-3d">
+            <div className="body flush" data-testid="trace-3d">
               <TraceGraph3D events={events} status={status} />
             </div>
           </div>

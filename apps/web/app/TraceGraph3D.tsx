@@ -90,7 +90,7 @@ type Palette = {
 };
 
 const FALLBACK_PALETTE: Palette = {
-  agent: "#7c93ff",
+  agent: "#818cf8",
   tool: "#4ec27a",
   active: "#e2a54a",
   edge: "#313a4d",
@@ -482,14 +482,14 @@ export default function TraceGraph3D({
 
   if (events.length === 0) {
     return (
-      <p className="muted" style={{ margin: 0, padding: 14 }}>
+      <p className="muted graph-empty">
         Run an agent to reconstruct its execution graph.
       </p>
     );
   }
 
   if (webgl === null) {
-    return <div style={{ height: 260 }} />;
+    return <div className="graph-box" />;
   }
 
   const clamped = Math.min(scrub, maxIndex);
@@ -499,15 +499,15 @@ export default function TraceGraph3D({
   return (
     <div>
       {webgl ? (
-        <div style={{ height: 260 }} data-testid="trace-3d-canvas">
+        <div className="graph-box" data-testid="trace-3d-canvas">
           <Canvas camera={{ position: [0, 0, 6], fov: 50 }} dpr={[1, 1.5]}>
             <Scene frame={frame} nodes={nodes} palette={palette} />
           </Canvas>
         </div>
       ) : (
-        <div style={{ padding: 8 }}>
+        <div className="graph-fallback">
           <Fallback2D frame={frame} nodes={nodes} palette={palette} />
-          <p className="muted" style={{ margin: "0 0 4px", fontSize: 11, textAlign: "center" }}>
+          <p className="muted graph-fallback-note">
             2D fallback (no WebGL / reduced motion)
           </p>
         </div>

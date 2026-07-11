@@ -328,16 +328,16 @@ export default function EvalPanel({ manifestYaml }: { manifestYaml: string }) {
               <div className="eval-suite-field">
                 <label htmlFor="eval-suite">Suite</label>
                 {suitesError ? (
-                  <p className="err" style={{ margin: 0 }} data-testid="eval-suites-error">
+                  <p className="err" data-testid="eval-suites-error">
                     Could not load suites: {suitesError}
                   </p>
                 ) : suites === null ? (
-                  <p className="empty" style={{ margin: 0 }}>
+                  <p className="empty">
                     <SpinnerIcon className="spin" />
                     Loading suites…
                   </p>
                 ) : suites.length === 0 ? (
-                  <p className="empty" style={{ margin: 0 }}>
+                  <p className="empty">
                     No eval suites registered.
                   </p>
                 ) : (
@@ -372,14 +372,7 @@ export default function EvalPanel({ manifestYaml }: { manifestYaml: string }) {
               <label
                 className="eval-gate-toggle"
                 title="Gate this run against the manifest's stored baseline"
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                  fontSize: 12,
-                  color: "var(--ink-soft)",
-                  cursor: running ? "not-allowed" : "pointer",
-                }}
+                style={{ cursor: running ? "not-allowed" : "pointer" }}
               >
                 <input
                   type="checkbox"
@@ -471,14 +464,8 @@ export default function EvalPanel({ manifestYaml }: { manifestYaml: string }) {
                 </div>
 
                 {result.report_id && (
-                  <div
-                    className="eval-gate"
-                    style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 12 }}
-                  >
-                    <div
-                      className="eval-gate-actions"
-                      style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}
-                    >
+                  <div className="eval-gate">
+                    <div className="eval-gate-actions">
                       <button
                         className="secondary"
                         data-testid="eval-promote"
@@ -493,16 +480,7 @@ export default function EvalPanel({ manifestYaml }: { manifestYaml: string }) {
                         {promote.status === "saving" ? "Saving…" : "Set as baseline"}
                       </button>
                       {promote.status === "saved" && promote.message && (
-                        <span
-                          data-testid="eval-promote-status"
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 6,
-                            fontSize: 12,
-                            color: "var(--ok)",
-                          }}
-                        >
+                        <span className="eval-promote-status" data-testid="eval-promote-status">
                           <CheckIcon /> {promote.message}
                         </span>
                       )}
@@ -524,9 +502,9 @@ export default function EvalPanel({ manifestYaml }: { manifestYaml: string }) {
                         {spotOpen ? "Hide" : "Show"} judge spot-check
                       </button>
                       {spotOpen && (
-                        <div className="eval-spot-body" style={{ marginTop: 10 }}>
+                        <div className="eval-spot-body">
                           {spotStatus === "loading" && (
-                            <p className="empty" style={{ margin: 0 }}>
+                            <p className="empty">
                               <SpinnerIcon className="spin" />
                               Loading judged samples…
                             </p>
@@ -537,30 +515,20 @@ export default function EvalPanel({ manifestYaml }: { manifestYaml: string }) {
                             </p>
                           )}
                           {spotStatus === "done" && spot && spot.samples.length === 0 && (
-                            <p className="empty" style={{ margin: 0 }}>
+                            <p className="empty">
                               No llm-judge samples — this suite scores deterministically, so no
                               human audit is needed.
                             </p>
                           )}
                           {spotStatus === "done" && spot && spot.samples.length > 0 && (
                             <div
-                              className="eval-tasks"
+                              className="eval-tasks eval-spot-tasks"
                               aria-label="judge spot-check samples"
-                              style={{ gap: 8, maxHeight: 360 }}
                             >
                               {spot.samples.map((s) => (
-                                <div
-                                  key={`${s.split}-${s.task_id}`}
-                                  style={{
-                                    display: "flex",
-                                    flexDirection: "column",
-                                    gap: 4,
-                                    padding: "8px 14px",
-                                    borderBottom: "1px solid var(--line-soft)",
-                                  }}
-                                >
-                                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                    <span className="et-id" title={s.task_id} style={{ flex: 1 }}>
+                                <div key={`${s.split}-${s.task_id}`} className="eval-spot-row">
+                                  <div className="eval-spot-row-head">
+                                    <span className="et-id" title={s.task_id}>
                                       {s.task_id}
                                       <span className="es-sub"> · {prettySplit(s.split)}</span>
                                     </span>
@@ -571,15 +539,11 @@ export default function EvalPanel({ manifestYaml }: { manifestYaml: string }) {
                                       {s.review_status ?? "—"}
                                     </span>
                                   </div>
-                                  <p
-                                    className="es-sub"
-                                    style={{ margin: 0 }}
-                                    title={s.input}
-                                  >
+                                  <p className="es-sub" title={s.input}>
                                     <b>input:</b> {s.input}
                                   </p>
                                   <p
-                                    style={{ margin: 0, fontSize: 12, color: "var(--ink-soft)" }}
+                                    className="eval-spot-answer"
                                     title={s.judge_detail || undefined}
                                   >
                                     <b>answer:</b> {s.answer ?? "—"}
