@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { motion, useReducedMotion } from "motion/react";
 import yaml from "js-yaml";
 import {
@@ -193,7 +194,12 @@ export default function Page() {
   return (
     <>
       <div className="topbar">
-        <div className="brand">
+        <Link
+          href="/"
+          className="brand"
+          data-testid="home-link"
+          aria-label="Back to AgentForge home"
+        >
           <span className="brand-mark" aria-hidden="true">
             <LogoMark />
           </span>
@@ -201,7 +207,7 @@ export default function Page() {
             AgentForge
             <span className="brand-sub">Agent Builder</span>
           </h1>
-        </div>
+        </Link>
         <span className="spacer" />
         <span className="status-chip">
           <span className={`dot ${health ? "ok" : ""}`} data-testid="health-dot" />

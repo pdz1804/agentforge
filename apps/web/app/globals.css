@@ -271,6 +271,19 @@ a:hover { text-decoration: underline; }
 
 .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
 
+/* The brand is a link home from the console. Keep it reading as chrome, not a
+   body link: ink text, no underline, a quiet hover + a keyboard focus ring. */
+a.brand {
+  color: var(--ink);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: opacity var(--dur) var(--ease);
+}
+a.brand h1 { color: var(--ink); }
+a.brand:hover { opacity: 0.9; text-decoration: none; }
+a.brand:hover .brand-mark { border-color: var(--primary); }
+a.brand:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+
 .brand-mark {
   display: grid;
   place-items: center;

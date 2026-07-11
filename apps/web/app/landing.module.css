@@ -60,7 +60,10 @@
   color: var(--ink);
   font-size: var(--text-lg);
 }
-.brand:hover { text-decoration: none; }
+.brand { cursor: pointer; border-radius: var(--r-sm); transition: opacity var(--dur) var(--ease); }
+.brand:hover { text-decoration: none; opacity: 0.9; }
+.brand:hover .brandMark { border-color: var(--primary); }
+.brand:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
 .brandMark {
   display: grid;
   place-items: center;
@@ -75,6 +78,14 @@
 .brandMark svg { width: 17px; height: 17px; }
 .navSpacer { flex: 1; }
 .navRight { display: inline-flex; align-items: center; gap: 10px; }
+/* Guard the single-line nav on the narrowest phones (360px): tighten spacing
+   and the CTA padding so brand + toggle + CTA never overflow into a scrollbar.
+   Touch height stays >= 44px via the shared .cta rule below. */
+@media (max-width: 460px) {
+  .navInner { gap: 10px; }
+  .navRight { gap: 8px; }
+  .navRight .ctaPrimary { padding: 9px 13px; }
+}
 
 /* =====================================================================
    Shared CTA styling - mirrors the console button so the two surfaces read
@@ -285,7 +296,9 @@
 }
 
 /* =====================================================================
-   Capability bento - 6 real cells with rhythm (3+3, then 2+2+2).
+   Capability bento - 6 real cells over a 6-col grid, every row full so no
+   track is left orphaned: row 1 = 3+3 (two wide), row 2 = 2+4, row 3 = 4+2.
+   The pinwheel of spans gives rhythm while filling exactly 18 = 3x6 tracks.
    ===================================================================== */
 .bento {
   display: grid;
@@ -305,6 +318,7 @@
 }
 .cell:hover { border-color: var(--line-strong); box-shadow: var(--shadow-lift); }
 .cellWide { grid-column: span 3; }
+.cellMajor { grid-column: span 4; }
 .cellThird { grid-column: span 2; }
 .cellTinted {
   background:
@@ -380,7 +394,7 @@
 
 @media (max-width: 860px) {
   .bento { grid-template-columns: repeat(2, 1fr); }
-  .cellWide, .cellThird { grid-column: span 1; }
+  .cellWide, .cellMajor, .cellThird { grid-column: span 1; }
 }
 @media (max-width: 560px) {
   .bento { grid-template-columns: 1fr; }

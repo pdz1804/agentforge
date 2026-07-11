@@ -72,7 +72,7 @@ export default function LandingPage() {
       {/* ---- Navigation ---- */}
       <header className={styles.nav}>
         <nav className={styles.navInner} aria-label="Primary">
-          <a className={styles.brand} href={CONSOLE_HREF}>
+          <a className={styles.brand} href="/" aria-label="AgentForge home">
             <span className={styles.brandMark} aria-hidden="true">
               <LogoMark />
             </span>
@@ -226,7 +226,7 @@ export default function LandingPage() {
 
             {/* Cell 4 - Live trace + cost, tinted panel */}
             <motion.article
-              className={`${styles.cell} ${styles.cellThird} ${styles.cellTinted}`}
+              className={`${styles.cell} ${styles.cellMajor} ${styles.cellTinted}`}
               variants={item}
               {...cardHoverProps(reduce)}
             >
@@ -248,7 +248,7 @@ export default function LandingPage() {
             </motion.article>
 
             {/* Cell 5 - Eval harness */}
-            <motion.article className={`${styles.cell} ${styles.cellThird}`} variants={item} {...cardHoverProps(reduce)}>
+            <motion.article className={`${styles.cell} ${styles.cellMajor}`} variants={item} {...cardHoverProps(reduce)}>
               <span className={styles.cellIco}><GaugeIcon /></span>
               <h3 className={styles.cellTitle}>Eval harness</h3>
               <p className={styles.cellBody}>

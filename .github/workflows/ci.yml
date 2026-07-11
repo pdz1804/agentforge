@@ -10,16 +10,34 @@ on:
   push:
   pull_request:
 
+# Least-privilege by default: CI only needs to read the repository. Jobs that
+# need more (none here) opt in explicitly.
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref so a rapid push sequence does not pile
+# up redundant runners.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   python-tests:
-    name: python-tests
+    name: python-tests (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      # Prove the package and API run on every interpreter pyproject advertises
+      # (requires-python >=3.11; classifiers list 3.11 + 3.12). fail-fast off so
+      # a failure on one interpreter still reports the other.
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           cache: "pip"
           cache-dependency-path: |
             packages/agent-core/pyproject.toml
@@ -30,7 +48,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e "packages/agent-core[dev,openai,anthropic]"
           pip install -r apps/api/requirements.txt
-          pip install ruff
+          pip install ruff pytest-cov
 
       - name: Lint (ruff)
         # packages/agent-core/pyproject.toml carries the [tool.ruff] config;
@@ -40,8 +58,11 @@ jobs:
       - name: Test agent-core (unit + integration, excluding the Docker sandbox matrix)
         # The sandbox-security suite needs a Docker daemon; it runs as its own
         # job below so a missing/broken daemon fails loud instead of being
-        # silently absorbed into this job's pass/fail signal.
-        run: pytest packages/agent-core --ignore=packages/agent-core/tests/test_sandbox_security.py -v
+        # silently absorbed into this job's pass/fail signal. Coverage is
+        # measured over the agent_core package and printed (term-missing); it is
+        # a visibility signal, not a hard threshold gate (kept off to avoid
+        # flakiness on the Docker-only paths excluded here).
+        run: pytest packages/agent-core --ignore=packages/agent-core/tests/test_sandbox_security.py -v --cov=agent_core --cov-report=term-missing
 
       - name: Test API (FastAPI TestClient, offline echo model + in-memory store)
         run: pytest apps/api -v
@@ -102,6 +123,12 @@ jobs:
 
       - name: Build (Next.js production build must succeed)
         run: npm run build
+
+      - name: npm audit (advisory)
+        # Advisory web-dependency vulnerability scan; continue-on-error so
+        # upstream advisories do not block a build but are surfaced for triage.
+        continue-on-error: true
+        run: npm audit --audit-level=high || echo "::warning title=npm-audit::advisory findings above; review before shipping"
 
   web-e2e:
     name: web-e2e
@@ -206,3 +233,61 @@ jobs:
           name: agentforge-web-e2e-evidence
           path: plans/260709-1427-dual-app-buildout/reports/agentforge-ui
           if-no-files-found: ignore
+
+  package-build:
+    name: package-build
+    # Build-blocking PyPI-readiness gate: the same sdist + wheel the release
+    # workflow ships must build cleanly and pass twine's metadata render on
+    # every push, so a broken README/classifier/version is caught here rather
+    # than at tag time. Mirrors the build step in release.yml.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/agent-core
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build sdist + wheel and validate metadata
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          twine check dist/*
+
+      - name: Import-check the built wheel in a clean venv
+        # Install the freshly built wheel (not the source tree) into an isolated
+        # venv and import the package, catching packaging bugs (missing modules,
+        # bad package discovery) that an editable install would hide.
+        run: |
+          python -m venv /tmp/wheelcheck
+          /tmp/wheelcheck/bin/python -m pip install --upgrade pip
+          /tmp/wheelcheck/bin/pip install dist/*.whl
+          /tmp/wheelcheck/bin/python -c "import agent_core; print('agent_core', agent_core.__version__)"
+
+  security:
+    name: security-audit (advisory)
+    # Dependency CVE scan. Advisory (continue-on-error) so an upstream advisory
+    # in a transitive pin does not block unrelated changes, but the findings are
+    # always printed in the log and surfaced as an annotation for triage.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: pip-audit (agent-core resolved dependency tree)
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          pip install "packages/agent-core[openai,anthropic,mcp,postgres]"
+          pip-audit --strict --desc || echo "::warning title=pip-audit::advisory findings above; review before release"
+
+      - name: bandit (static security lint of agent-core source)
+        run: |
+          python -m pip install bandit
+          bandit -r packages/agent-core/src -ll || echo "::warning title=bandit::advisory findings above; review before release"
